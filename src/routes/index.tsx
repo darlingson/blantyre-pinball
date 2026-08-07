@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Gamepad2, Info, Menu, Play, Settings, Trophy, X } from "lucide-react";
 import { useState } from "react";
 import { BoltIcon, LandmarkIcon, RoundaboutIcon } from "../components/icons";
 
@@ -51,12 +52,7 @@ function LandingPage() {
 			<header className="fixed top-0 z-50 w-full bg-surface/80 shadow-sm backdrop-blur-md">
 				<div className="mx-auto flex w-full max-w-[1200px] items-center justify-between px-lg py-sm">
 					<Link to="/" className="flex items-center gap-sm text-primary">
-						<span
-							className="material-symbols-outlined"
-							style={{ fontVariationSettings: "'FILL' 1" }}
-						>
-							sports_esports
-						</span>
+						<Gamepad2 className="h-6 w-6" />
 						<span className="font-display text-label-caps tracking-tighter">
 							BLANTYRE PINBALL
 						</span>
@@ -68,7 +64,7 @@ function LandingPage() {
 						onClick={() => setDrawerOpen(true)}
 						aria-label="Open menu"
 					>
-						<span className="material-symbols-outlined">menu</span>
+						<Menu className="h-6 w-6" />
 					</button>
 
 					<nav className="hidden gap-lg md:flex">
@@ -117,7 +113,7 @@ function LandingPage() {
 							onClick={() => setDrawerOpen(false)}
 							aria-label="Close menu"
 						>
-							<span className="material-symbols-outlined">close</span>
+							<X className="h-6 w-6" />
 						</button>
 					</div>
 					<nav className="flex flex-col gap-sm">
@@ -125,28 +121,28 @@ function LandingPage() {
 							to="/launch"
 							className="flex items-center gap-md rounded-md p-3 text-label-caps text-on-surface-variant transition-transform hover:bg-surface-variant"
 						>
-							<span className="material-symbols-outlined">play_circle</span>
+							<Play className="h-5 w-5" />
 							Play Now
 						</Link>
 						<button
 							type="button"
 							className="flex items-center gap-md rounded-md p-3 text-label-caps text-on-surface-variant transition-transform hover:bg-surface-variant"
 						>
-							<span className="material-symbols-outlined">leaderboard</span>
+							<Trophy className="h-5 w-5" />
 							Leaderboard
 						</button>
 						<button
 							type="button"
 							className="flex items-center gap-md rounded-md p-3 text-label-caps text-on-surface-variant transition-transform hover:bg-surface-variant"
 						>
-							<span className="material-symbols-outlined">settings</span>
+							<Settings className="h-5 w-5" />
 							Settings
 						</button>
 						<Link
 							to="/about"
 							className="flex items-center gap-md rounded-md p-3 text-label-caps text-on-surface-variant transition-transform hover:bg-surface-variant"
 						>
-							<span className="material-symbols-outlined">info</span>
+							<Info className="h-5 w-5" />
 							About
 						</Link>
 					</nav>
