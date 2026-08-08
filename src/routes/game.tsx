@@ -1,14 +1,15 @@
-import { Html, OrbitControls } from "@react-three/drei";
-import { Canvas } from "@react-three/fiber";
+import { Html } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
     BallCollider,
     CuboidCollider,
     CylinderCollider,
     Physics,
     RigidBody,
+    type RapierRigidBody,
 } from "@react-three/rapier";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 export const Route = createFileRoute("/game")({
@@ -297,9 +298,16 @@ function LaunchGate({
     );
 }
 
-function Pinball({ position }: { position: [number, number, number] }) {
+function Pinball({
+    position,
+    bodyRef,
+}: {
+    position: [number, number, number];
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+}) {
     return (
         <RigidBody
+            ref={bodyRef}
             colliders={false}
             position={position}
             restitution={0.35}
@@ -312,6 +320,86 @@ function Pinball({ position }: { position: [number, number, number] }) {
             </mesh>
             <BallCollider args={[0.5]} />
         </RigidBody>
+    );
+}
+
+/* ---------------------------------------------------------- */
+/* 2D keyboard controls — move the ball up/down (Z) and       */
+/* left/right (X) on the flat playfield, like pinball.         */
+/* ---------------------------------------------------------- */
+
+function useKeys() {
+    const [keys, setKeys] = useState({ up: false, down: false, left: false, right: false });
+
+    useEffect(() => {
+        const keyToDir: Record<string, keyof typeof keys> = {
+            ArrowUp: "up",
+            KeyW: "up",
+            ArrowDown: "down",
+            KeyS: "down",
+            ArrowLeft: "left",
+            KeyA: "left",
+            ArrowRight: "right",
+            KeyD: "right",
+        };
+        const update = (code: string, pressed: boolean) => {
+            const dir = keyToDir[code];
+            if (!dir) return;
+            setKeys((prev) => (prev[dir] === pressed ? prev : { ...prev, [dir]: pressed }));
+        };
+        const onDown = (e: KeyboardEvent) => update(e.code, true);
+        const onUp = (e: KeyboardEvent) => update(e.code, false);
+        window.addEventListener("keydown", onDown);
+        window.addEventListener("keyup", onUp);
+        return () => {
+            window.removeEventListener("keydown", onDown);
+            window.removeEventListener("keyup", onUp);
+        };
+    }, []);
+
+    return keys;
+}
+
+/** Steers the ball with horizontal force; the tilted gravity keeps pulling it down the board. */
+function BallController({
+    bodyRef,
+}: { bodyRef: React.MutableRefObject<RapierRigidBody | null> }) {
+    const keys = useKeys();
+
+    useFrame((_, dt) => {
+        const body = bodyRef.current;
+        if (!body) return;
+        const linvel = body.linvel();
+        let { x, z } = linvel;
+
+        if (keys.left) x = Math.max(x - 12 * dt, -8);
+        if (keys.right) x = Math.min(x + 12 * dt, 8);
+        if (keys.up) z = Math.max(z - 12 * dt, -6);
+        if (keys.down) z = Math.min(z + 12 * dt, 10);
+
+        body.setLinvel({ x, y: linvel.y, z }, true);
+    });
+
+    return null;
+}
+
+/** Fixed walls around the playfield so the ball never leaves the boards. */
+function PlayfieldWalls() {
+    return (
+        <group>
+            <RigidBody type="fixed" colliders={false} position={[0, -0.5, -13]}>
+                <CuboidCollider args={[13, 1, 0.35]} />
+            </RigidBody>
+            <RigidBody type="fixed" colliders={false} position={[0, -0.5, 13]}>
+                <CuboidCollider args={[13, 1, 0.35]} />
+            </RigidBody>
+            <RigidBody type="fixed" colliders={false} position={[-13, -0.5, 0]}>
+                <CuboidCollider args={[0.35, 1, 26]} />
+            </RigidBody>
+            <RigidBody type="fixed" colliders={false} position={[13, -0.5, 0]}>
+                <CuboidCollider args={[0.35, 1, 26]} />
+            </RigidBody>
+        </group>
     );
 }
 
@@ -423,11 +511,25 @@ const TREES: [number, number, number][] = [
 /* Scene                                                        */
 /* ---------------------------------------------------------- */
 
+/** Fixed pinball view: camera sits behind the flippers (player side) and
+ *  looks back up the table at the bumpers, keeping the whole field framed. */
+function PinballCamera() {
+    const camera = useThree((s) => s.camera);
+
+    useEffect(() => {
+        camera.position.set(0, 9.5, 16);
+        camera.lookAt(0, 1, -4);
+    }, [camera]);
+
+    return null;
+}
+
 function GamePage() {
     const [score] = useState(1_240_500);
     const [highScore] = useState(5_000_000);
     const [balls] = useState(3);
     const [multiplier] = useState(5);
+    const ballRef = useRef<RapierRigidBody | null>(null);
 
     return (
         <main className="relative h-screen w-screen overflow-hidden bg-surface">
@@ -446,7 +548,8 @@ function GamePage() {
                     shadow-mapSize-height={2048}
                 />
 
-                <Physics gravity={[0, -9.81, 0]}>
+                {/* Tilted gravity: pulls the ball down the board (+Z toward the player) like a real pinball machine */}
+                <Physics gravity={[0, -9.4, 3.4]}>
                     {/* Rolling terrain floor + flat collider underneath it */}
                     <RigidBody type="fixed" colliders={false} position={[0, -0.25, 0]}>
                         <Terrain />
@@ -491,17 +594,16 @@ function GamePage() {
                     <LaunchGate position={[-3.2, 0.6, 6.5]} rotationY={0.55} />
                     <LaunchGate position={[3.2, 0.6, 6.5]} rotationY={-0.55} />
 
-                    {/* The ball */}
-                    <Pinball position={[0, 3, 3]} />
+                    {/* Keep the ball on the playfield */}
+                    <PlayfieldWalls />
+
+                    {/* The ball + 2D keyboard steering */}
+                    <Pinball position={[0, 3, 3]} bodyRef={ballRef} />
+                    <BallController bodyRef={ballRef} />
                 </Physics>
 
-                <OrbitControls
-                    makeDefault
-                    enablePan={false}
-                    maxPolarAngle={Math.PI / 2.4}
-                    minDistance={8}
-                    maxDistance={30}
-                />
+                {/* Fixed pinball camera angle — no orbit controls */}
+                <PinballCamera />
             </Canvas>
         </main>
     );
