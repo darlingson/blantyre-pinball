@@ -360,15 +360,20 @@ function useKeys() {
     return keys;
 }
 
-/** Steers the ball with horizontal force; the tilted gravity keeps pulling it down the board. */
+/** Steers the ball with horizontal force; the tilted gravity keeps pulling it down the board.
+ *  Steering is disabled until the ball has been launched. */
 function BallController({
     bodyRef,
-}: { bodyRef: React.MutableRefObject<RapierRigidBody | null> }) {
+    launched,
+}: {
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+    launched: boolean;
+}) {
     const keys = useKeys();
 
     useFrame((_, dt) => {
         const body = bodyRef.current;
-        if (!body) return;
+        if (!body || !launched) return;
         const linvel = body.linvel();
         let { x, z } = linvel;
 
@@ -378,6 +383,146 @@ function BallController({
         if (keys.down) z = Math.min(z + 12 * dt, 10);
 
         body.setLinvel({ x, y: linvel.y, z }, true);
+    });
+
+    return null;
+}
+
+/* ---------------------------------------------------------- */
+/* Launch tube — the ball starts here, and the player charges */
+/* a plunger to shoot it up onto the playfield.                */
+/* ---------------------------------------------------------- */
+
+/** Holds the ball in a side lane. The plunger rod retracts as the player
+ *  charges power (driven by `powerRef`), like a real pinball plunger. */
+function LaunchTube({ powerRef }: { powerRef: React.MutableRefObject<number> }) {
+    const rodRef = useRef<THREE.Group>(null);
+
+    useFrame(() => {
+        const rod = rodRef.current;
+        if (rod) rod.position.z = 13.4 + powerRef.current * 2.4;
+    });
+
+    return (
+        <group>
+            {/* left wall */}
+            <RigidBody type="fixed" colliders={false} position={[11.2, 0.55, 9.5]}>
+                <CuboidCollider args={[0.15, 0.6, 3.1]} />
+            </RigidBody>
+            {/* right wall */}
+            <RigidBody type="fixed" colliders={false} position={[12.5, 0.55, 9.5]}>
+                <CuboidCollider args={[0.15, 0.6, 3.1]} />
+            </RigidBody>
+            {/* bottom cap — keeps the ball in the lane until launch */}
+            <RigidBody type="fixed" colliders={false} position={[11.85, 0.55, 12.55]}>
+                <CuboidCollider args={[0.75, 0.6, 0.15]} />
+            </RigidBody>
+
+            {/* visual walls */}
+            <mesh position={[11.2, 0.55, 9.5]} castShadow>
+                <boxGeometry args={[0.15, 1.1, 6.2]} />
+                <meshStandardMaterial color="#7a5a34" />
+            </mesh>
+            <mesh position={[12.5, 0.55, 9.5]} castShadow>
+                <boxGeometry args={[0.15, 1.1, 6.2]} />
+                <meshStandardMaterial color="#7a5a34" />
+            </mesh>
+            <mesh position={[11.85, 0.55, 12.55]} castShadow>
+                <boxGeometry args={[1.5, 1.1, 0.15]} />
+                <meshStandardMaterial color="#7a5a34" />
+            </mesh>
+
+            {/* plunger rod + knob, pulled back as power charges */}
+            <group ref={rodRef} position={[11.85, 0.55, 13.4]}>
+                <mesh rotation={[Math.PI / 2, 0, 0]} castShadow>
+                    <cylinderGeometry args={[0.18, 0.18, 2.4, 16]} />
+                    <meshStandardMaterial color="#fdbc13" metalness={0.7} roughness={0.3} />
+                </mesh>
+                <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.3, 0]} castShadow>
+                    <cylinderGeometry args={[0.26, 0.26, 0.15, 16]} />
+                    <meshStandardMaterial color="#ba1a1a" />
+                </mesh>
+            </group>
+        </group>
+    );
+}
+
+/** Vertical power meter next to the launch tube; fills and turns red→green as you charge. */
+function PowerMeter({ powerRef }: { powerRef: React.MutableRefObject<number> }) {
+    const barRef = useRef<THREE.Mesh>(null);
+    const matRef = useRef<THREE.MeshStandardMaterial>(null);
+
+    useFrame(() => {
+        const bar = barRef.current;
+        if (!bar) return;
+        const p = powerRef.current;
+        bar.scale.y = Math.max(p, 0.001);
+        if (matRef.current) matRef.current.color.setHSL(0.33 * (1 - p), 0.85, 0.45);
+    });
+
+    return (
+        <group position={[11.85, 0, 10.4]}>
+            <mesh position={[0, 0.05, 0]}>
+                <boxGeometry args={[0.24, 0.1, 0.1]} />
+                <meshStandardMaterial color="#3f3f3f" />
+            </mesh>
+            <mesh ref={barRef} position={[0, 1.4, 0]}>
+                <boxGeometry args={[0.18, 2.8, 0.08]} />
+                <meshStandardMaterial ref={matRef} color="#3f6212" />
+            </mesh>
+            <mesh position={[0, 2.8, 0]}>
+                <boxGeometry args={[0.24, 0.1, 0.1]} />
+                <meshStandardMaterial color="#3f3f3f" />
+            </mesh>
+        </group>
+    );
+}
+
+/** Hold SPACE to charge, release to launch the ball up the playfield.
+ *  Low power drops the ball near the flippers; full power sends it at the bumpers. */
+function LauncherController({
+    bodyRef,
+    powerRef,
+    onLaunch,
+}: {
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+    powerRef: React.MutableRefObject<number>;
+    onLaunch: () => void;
+}) {
+    const holding = useRef(false);
+    const fired = useRef(false);
+
+    useEffect(() => {
+        const onDown = (e: KeyboardEvent) => {
+            if (e.code === "Space" && !fired.current) {
+                holding.current = true;
+                e.preventDefault();
+            }
+        };
+        const onUp = (e: KeyboardEvent) => {
+            if (e.code !== "Space") return;
+            holding.current = false;
+            if (fired.current) return;
+            const body = bodyRef.current;
+            if (!body) return;
+            fired.current = true;
+            const power = powerRef.current;
+            const speed = 8 + power * 18;
+            body.setLinvel({ x: 0, y: 0.5, z: -speed }, true);
+            onLaunch();
+        };
+        window.addEventListener("keydown", onDown);
+        window.addEventListener("keyup", onUp);
+        return () => {
+            window.removeEventListener("keydown", onDown);
+            window.removeEventListener("keyup", onUp);
+        };
+    }, [bodyRef, powerRef, onLaunch]);
+
+    useFrame((_, dt) => {
+        if (holding.current && !fired.current) {
+            powerRef.current = Math.min(powerRef.current + dt / 1.6, 1);
+        }
     });
 
     return null;
@@ -412,11 +557,13 @@ function HUD({
     highScore,
     balls,
     multiplier,
+    launched,
 }: {
     score: number;
     highScore: number;
     balls: number;
     multiplier: number;
+    launched: boolean;
 }) {
     return (
         <div className="pointer-events-none absolute inset-0 z-10">
@@ -450,6 +597,18 @@ function HUD({
                     <span>⚾</span>
                     <span className="font-semibold text-slate-900">BALLS: {balls}</span>
                 </div>
+
+                {!launched && (
+                    <div className="pointer-events-auto rounded-2xl bg-white/80 px-5 py-3 text-center backdrop-blur-sm shadow-md">
+                        <div className="text-xs font-semibold tracking-wide text-slate-500">
+                            LAUNCH
+                        </div>
+                        <div className="font-bold text-slate-900">
+                            Hold <kbd className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-sm">SPACE</kbd> to charge, release to launch
+                        </div>
+                    </div>
+                )}
+
                 <button className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full bg-white/80 text-xl backdrop-blur-sm shadow-md">
                     ⏸
                 </button>
@@ -512,13 +671,15 @@ const TREES: [number, number, number][] = [
 /* ---------------------------------------------------------- */
 
 /** Fixed pinball view: camera sits behind the flippers (player side) and
- *  looks back up the table at the bumpers, keeping the whole field framed. */
+ *  looks back up the table at the bumpers, framing the whole playfield. */
 function PinballCamera() {
-    const camera = useThree((s) => s.camera);
+    const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
 
     useEffect(() => {
-        camera.position.set(0, 9.5, 16);
-        camera.lookAt(0, 1, -4);
+        camera.position.set(0, 16, 21);
+        camera.fov = 50;
+        camera.lookAt(0, 0.5, -2);
+        camera.updateProjectionMatrix();
     }, [camera]);
 
     return null;
@@ -529,11 +690,13 @@ function GamePage() {
     const [highScore] = useState(5_000_000);
     const [balls] = useState(3);
     const [multiplier] = useState(5);
+    const [launched, setLaunched] = useState(false);
     const ballRef = useRef<RapierRigidBody | null>(null);
+    const powerRef = useRef(0);
 
     return (
         <main className="relative h-screen w-screen overflow-hidden bg-surface">
-            <HUD score={score} highScore={highScore} balls={balls} multiplier={multiplier} />
+            <HUD score={score} highScore={highScore} balls={balls} multiplier={multiplier} launched={launched} />
 
             <Canvas shadows camera={{ position: [0, 16, 12], fov: 45 }}>
                 <color attach="background" args={["#eaf3e6"]} />
@@ -597,9 +760,18 @@ function GamePage() {
                     {/* Keep the ball on the playfield */}
                     <PlayfieldWalls />
 
-                    {/* The ball + 2D keyboard steering */}
-                    <Pinball position={[0, 3, 3]} bodyRef={ballRef} />
-                    <BallController bodyRef={ballRef} />
+                    {/* Launch tube: the ball starts here */}
+                    <LaunchTube powerRef={powerRef} />
+                    <PowerMeter powerRef={powerRef} />
+
+                    {/* The ball starts stopped in the launch lane */}
+                    <Pinball position={[11.85, 1.2, 11]} bodyRef={ballRef} />
+                    <LauncherController
+                        bodyRef={ballRef}
+                        powerRef={powerRef}
+                        onLaunch={() => setLaunched(true)}
+                    />
+                    <BallController bodyRef={ballRef} launched={launched} />
                 </Physics>
 
                 {/* Fixed pinball camera angle — no orbit controls */}
