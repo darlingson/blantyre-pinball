@@ -156,7 +156,7 @@ function Building({
 
 function Tree({ position }: { position: [number, number, number] }) {
     return (
-        <group position={position}>
+        <RigidBody type="fixed" colliders={false} position={position}>
             <mesh castShadow position={[0, 0.2, 0]}>
                 <cylinderGeometry args={[0.05, 0.07, 0.4, 6]} />
                 <meshStandardMaterial color="#8a6142" />
@@ -165,7 +165,8 @@ function Tree({ position }: { position: [number, number, number] }) {
                 <coneGeometry args={[0.28, 0.6, 8]} />
                 <meshStandardMaterial color="#4c8a3f" roughness={0.9} />
             </mesh>
-        </group>
+            <CylinderCollider args={[0.3, 0.28]} position={[0, 0.3, 0]} />
+        </RigidBody>
     );
 }
 
@@ -200,14 +201,22 @@ function Landmark({
     color,
     radius = 0.9,
     height = 0.7,
+    onHit,
 }: {
     position: [number, number, number];
     color: string;
     radius?: number;
     height?: number;
+    onHit?: (pos: [number, number, number]) => void;
 }) {
     return (
-        <RigidBody type="fixed" colliders={false} position={position}>
+        <RigidBody
+            type="fixed"
+            colliders={false}
+            position={position}
+            restitution={0.7}
+            onCollisionEnter={() => onHit?.(position)}
+        >
             <mesh castShadow position={[0, height / 2, 0]}>
                 <cylinderGeometry args={[radius, radius, height, 32]} />
                 <meshStandardMaterial color={color} metalness={0.5} roughness={0.3} />
@@ -228,17 +237,46 @@ function Landmark({
 function PinballBumper({
     position,
     color,
+    onHit,
 }: {
     position: [number, number, number];
     color: string;
+    onHit?: (bumperPos: [number, number, number]) => void;
 }) {
+    const [flash, setFlash] = useState(false);
+    const flashTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        return () => {
+            if (flashTimeout.current) clearTimeout(flashTimeout.current);
+        };
+    }, []);
+
     return (
-        <RigidBody type="fixed" colliders={false} position={position}>
+        <RigidBody
+            type="fixed"
+            colliders={false}
+            position={position}
+            restitution={1.1}
+            friction={0}
+            onCollisionEnter={() => {
+                onHit?.(position);
+                setFlash(true);
+                if (flashTimeout.current) clearTimeout(flashTimeout.current);
+                flashTimeout.current = setTimeout(() => setFlash(false), 130);
+            }}
+        >
             <mesh castShadow>
                 <cylinderGeometry args={[0.45, 0.45, 0.4, 32]} />
-                <meshStandardMaterial color={color} metalness={0.6} roughness={0.35} />
+                <meshStandardMaterial
+                    color={color}
+                    metalness={0.6}
+                    roughness={0.35}
+                    emissive={color}
+                    emissiveIntensity={flash ? 1.6 : 0}
+                />
             </mesh>
-            <CylinderCollider args={[0.4, 0.45]} />
+            <CylinderCollider args={[0.4, 0.45]} restitution={1.1} friction={0} />
         </RigidBody>
     );
 }
@@ -313,6 +351,8 @@ function Pinball({
             restitution={0.35}
             friction={0.2}
             linearDamping={0.05}
+            ccd
+            canSleep={false}
         >
             <mesh castShadow>
                 <sphereGeometry args={[0.5, 48, 48]} />
@@ -393,9 +433,18 @@ function BallController({
 /* a plunger to shoot it up onto the playfield.                */
 /* ---------------------------------------------------------- */
 
+/* ---------------------------------------------------------- */
+/* Shooter lane — a separated tube feeding the playfield.      */
+/* The lane runs the full table height on the right edge. A    */
+/* diagonal deflector at the top turns the ball's straight -Z  */
+/* launch into -X motion, sending it through the exit gap in   */
+/* the divider and into the playfield. Without that curve the  */
+/* ball bounces off the top wall straight back down the lane.  */
+/* ---------------------------------------------------------- */
+
 /** Holds the ball in a side lane. The plunger rod retracts as the player
  *  charges power (driven by `powerRef`), like a real pinball plunger. */
-function LaunchTube({ powerRef }: { powerRef: React.MutableRefObject<number> }) {
+function ShooterLane({ powerRef }: { powerRef: React.MutableRefObject<number> }) {
     const rodRef = useRef<THREE.Group>(null);
 
     useFrame(() => {
@@ -405,31 +454,49 @@ function LaunchTube({ powerRef }: { powerRef: React.MutableRefObject<number> }) 
 
     return (
         <group>
-            {/* left wall */}
-            <RigidBody type="fixed" colliders={false} position={[11.2, 0.55, 9.5]}>
-                <CuboidCollider args={[0.15, 0.6, 3.1]} />
+            {/* divider between lane and playfield (z -10..12.6).
+                The gap at the top (z -13..-10) is the exit into the playfield. */}
+            <RigidBody type="fixed" colliders={false} position={[11.2, 0.55, 1.3]}>
+                <CuboidCollider args={[0.15, 0.6, 11.3]} />
             </RigidBody>
-            {/* right wall */}
-            <RigidBody type="fixed" colliders={false} position={[12.5, 0.55, 9.5]}>
-                <CuboidCollider args={[0.15, 0.6, 3.1]} />
+            {/* outer lane wall, full height so the ball can't escape right */}
+            <RigidBody type="fixed" colliders={false} position={[12.5, 0.55, -0.2]}>
+                <CuboidCollider args={[0.15, 0.6, 12.8]} />
             </RigidBody>
             {/* bottom cap — keeps the ball in the lane until launch */}
             <RigidBody type="fixed" colliders={false} position={[11.85, 0.55, 12.55]}>
                 <CuboidCollider args={[0.75, 0.6, 0.15]} />
             </RigidBody>
+            {/* top curve: diagonal deflector turns -Z motion into -X motion */}
+            <RigidBody
+                type="fixed"
+                colliders={false}
+                position={[12.05, 0.55, -11.6]}
+                rotation={[0, Math.PI / 4, 0]}
+            >
+                <CuboidCollider args={[0.15, 0.6, 1.6]} />
+            </RigidBody>
 
             {/* visual walls */}
-            <mesh position={[11.2, 0.55, 9.5]} castShadow>
-                <boxGeometry args={[0.15, 1.1, 6.2]} />
+            <mesh position={[11.2, 0.55, 1.3]} castShadow>
+                <boxGeometry args={[0.3, 1.1, 22.6]} />
                 <meshStandardMaterial color="#7a5a34" />
             </mesh>
-            <mesh position={[12.5, 0.55, 9.5]} castShadow>
-                <boxGeometry args={[0.15, 1.1, 6.2]} />
+            <mesh position={[12.5, 0.55, -0.2]} castShadow>
+                <boxGeometry args={[0.3, 1.1, 25.6]} />
                 <meshStandardMaterial color="#7a5a34" />
             </mesh>
             <mesh position={[11.85, 0.55, 12.55]} castShadow>
                 <boxGeometry args={[1.5, 1.1, 0.15]} />
                 <meshStandardMaterial color="#7a5a34" />
+            </mesh>
+            <mesh
+                position={[12.05, 0.55, -11.6]}
+                rotation={[0, Math.PI / 4, 0]}
+                castShadow
+            >
+                <boxGeometry args={[0.3, 1.2, 3.2]} />
+                <meshStandardMaterial color="#0d3b66" metalness={0.5} roughness={0.4} />
             </mesh>
 
             {/* plunger rod + knob, pulled back as power charges */}
@@ -479,22 +546,37 @@ function PowerMeter({ powerRef }: { powerRef: React.MutableRefObject<number> }) 
 }
 
 /** Hold SPACE to charge, release to launch the ball up the playfield.
- *  Low power drops the ball near the flippers; full power sends it at the bumpers. */
+ *  Low power drops the ball near the flippers; full power sends it at the bumpers.
+ *  `enabled` is false while a ball is live — it re-arms after a drain so the
+ *  next ball can be launched. */
 function LauncherController({
     bodyRef,
     powerRef,
+    enabled,
     onLaunch,
 }: {
     bodyRef: React.MutableRefObject<RapierRigidBody | null>;
     powerRef: React.MutableRefObject<number>;
+    enabled: boolean;
     onLaunch: () => void;
 }) {
     const holding = useRef(false);
     const fired = useRef(false);
+    const enabledRef = useRef(enabled);
+    enabledRef.current = enabled;
+
+    useEffect(() => {
+        if (enabled) {
+            fired.current = false;
+            powerRef.current = 0;
+        } else {
+            holding.current = false;
+        }
+    }, [enabled, powerRef]);
 
     useEffect(() => {
         const onDown = (e: KeyboardEvent) => {
-            if (e.code === "Space" && !fired.current) {
+            if (e.code === "Space" && enabledRef.current && !fired.current) {
                 holding.current = true;
                 e.preventDefault();
             }
@@ -502,7 +584,7 @@ function LauncherController({
         const onUp = (e: KeyboardEvent) => {
             if (e.code !== "Space") return;
             holding.current = false;
-            if (fired.current) return;
+            if (fired.current || !enabledRef.current) return;
             const body = bodyRef.current;
             if (!body) return;
             fired.current = true;
@@ -520,8 +602,90 @@ function LauncherController({
     }, [bodyRef, powerRef, onLaunch]);
 
     useFrame((_, dt) => {
-        if (holding.current && !fired.current) {
+        if (holding.current && !fired.current && enabledRef.current) {
             powerRef.current = Math.min(powerRef.current + dt / 1.6, 1);
+        }
+    });
+
+    return null;
+}
+
+/** Watches for a drained ball (fell past the flippers toward the player)
+ *  and reports it once per ball. The launch lane (x ~= 11.85) is excluded
+ *  so the parked ball doesn't count as drained. */
+function DrainWatcher({
+    bodyRef,
+    launched,
+    onDrain,
+}: {
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+    launched: boolean;
+    onDrain: () => void;
+}) {
+    const launchedRef = useRef(launched);
+    launchedRef.current = launched;
+    const onDrainRef = useRef(onDrain);
+    onDrainRef.current = onDrain;
+
+    useFrame(() => {
+        const body = bodyRef.current;
+        if (!body || !launchedRef.current) return;
+        const t = body.translation();
+        const inLaunchLane = Math.abs(t.x - 11.85) < 1.0 && t.z > 6;
+        if (t.y < -2) {
+            onDrainRef.current();
+        } else if (!inLaunchLane && t.z > 9.5 && t.y < 2) {
+            onDrainRef.current();
+        }
+    });
+
+    return null;
+}
+
+/** Recovers a ball that settles back into the shooter lane — a weak launch
+ *  that never reached the top curve, or a live ball that fell back in.
+ *  Like a real table it ends up parked on the plunger, so we re-arm
+ *  SPACE instead of draining the ball. */
+function LaneWatcher({
+    bodyRef,
+    launched,
+    onBackToShooter,
+}: {
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+    launched: boolean;
+    onBackToShooter: () => void;
+}) {
+    const launchedRef = useRef(launched);
+    launchedRef.current = launched;
+    const cbRef = useRef(onBackToShooter);
+    cbRef.current = onBackToShooter;
+    const stillFrames = useRef(0);
+
+    useFrame(() => {
+        const body = bodyRef.current;
+        if (!body || !launchedRef.current) {
+            stillFrames.current = 0;
+            return;
+        }
+        let inLane = false;
+        let speed = 99;
+        try {
+            const t = body.translation();
+            const v = body.linvel();
+            speed = Math.hypot(v.x, v.y, v.z);
+            inLane = t.x > 10.7 && t.x < 13 && t.z > 5.5 && t.z < 13.2 && t.y < 2.5;
+        } catch {
+            stillFrames.current = 0;
+            return;
+        }
+        if (inLane && speed < 1.2) {
+            stillFrames.current += 1;
+            if (stillFrames.current > 45) {
+                stillFrames.current = 0;
+                cbRef.current();
+            }
+        } else {
+            stillFrames.current = 0;
         }
     });
 
@@ -598,15 +762,26 @@ function HUD({
                     <span className="font-semibold text-slate-900">BALLS: {balls}</span>
                 </div>
 
-                {!launched && (
+                {balls === 0 ? (
                     <div className="pointer-events-auto rounded-2xl bg-white/80 px-5 py-3 text-center backdrop-blur-sm shadow-md">
                         <div className="text-xs font-semibold tracking-wide text-slate-500">
-                            LAUNCH
+                            GAME OVER
                         </div>
                         <div className="font-bold text-slate-900">
-                            Hold <kbd className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-sm">SPACE</kbd> to charge, release to launch
+                            Out of balls — refresh to play again
                         </div>
                     </div>
+                ) : (
+                    !launched && (
+                        <div className="pointer-events-auto rounded-2xl bg-white/80 px-5 py-3 text-center backdrop-blur-sm shadow-md">
+                            <div className="text-xs font-semibold tracking-wide text-slate-500">
+                                LAUNCH
+                            </div>
+                            <div className="font-bold text-slate-900">
+                                Hold <kbd className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-sm">SPACE</kbd> to charge, release to launch
+                            </div>
+                        </div>
+                    )
                 )}
 
                 <button className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full bg-white/80 text-xl backdrop-blur-sm shadow-md">
@@ -686,13 +861,101 @@ function PinballCamera() {
 }
 
 function GamePage() {
-    const [score] = useState(1_240_500);
-    const [highScore] = useState(5_000_000);
-    const [balls] = useState(3);
-    const [multiplier] = useState(5);
+    const [score, setScore] = useState(0);
+    const [highScore, setHighScore] = useState(5_000_000);
+    const [balls, setBalls] = useState(3);
+    const [multiplier, setMultiplier] = useState(1);
     const [launched, setLaunched] = useState(false);
     const ballRef = useRef<RapierRigidBody | null>(null);
     const powerRef = useRef(0);
+    const hitsRef = useRef(0);
+    const multiplierRef = useRef(1);
+    const drainingRef = useRef(false);
+    const LAUNCH_SPOT = useMemo(
+        () => ({ x: 11.85, y: 1.2, z: 11 }),
+        [],
+    );
+
+    useEffect(() => {
+        setHighScore((h) => (score > h ? score : h));
+    }, [score]);
+
+    const kickBallFrom = (pos: [number, number, number], strength = 2.2) => {
+        const body = ballRef.current;
+        if (!body) return;
+        try {
+            const t = body.translation();
+            const dx = t.x - pos[0];
+            const dz = t.z - pos[2];
+            const len = Math.hypot(dx, dz) || 1;
+            body.applyImpulse(
+                { x: (dx / len) * strength, y: 0.6, z: (dz / len) * strength },
+                true,
+            );
+        } catch {
+            /* physics not ready yet */
+        }
+    };
+
+    const bumpMultiplier = () => {
+        hitsRef.current += 1;
+        if (hitsRef.current % 8 === 0 && multiplierRef.current < 8) {
+            multiplierRef.current += 1;
+            setMultiplier(multiplierRef.current);
+        }
+    };
+
+    const handleBumperHit = (pos: [number, number, number]) => {
+        if (!launched) return;
+        kickBallFrom(pos, 2.4);
+        bumpMultiplier();
+        setScore((s) => s + 500 * multiplierRef.current);
+    };
+
+    const handleLandmarkHit = (pos: [number, number, number]) => {
+        if (!launched) return;
+        kickBallFrom(pos, 1.4);
+        bumpMultiplier();
+        setScore((s) => s + 2000 * multiplierRef.current);
+    };
+
+    const handleLaunch = () => {
+        drainingRef.current = false;
+        setLaunched(true);
+    };
+
+    const resetBallToShooter = () => {
+        const body = ballRef.current;
+        try {
+            body?.setTranslation(LAUNCH_SPOT, true);
+            body?.setLinvel({ x: 0, y: 0, z: 0 }, true);
+            body?.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        } catch {
+            /* ignore reset errors */
+        }
+        powerRef.current = 0;
+    };
+
+    const handleDrain = () => {
+        if (drainingRef.current || !launched) return;
+        drainingRef.current = true;
+        resetBallToShooter();
+        multiplierRef.current = 1;
+        setMultiplier(1);
+        setLaunched(false);
+        setBalls((b) => Math.max(0, b - 1));
+        setTimeout(() => {
+            drainingRef.current = false;
+        }, 500);
+    };
+
+    /** Ball settled back in the lane — park it on the plunger and re-arm,
+     *  without costing a ball. */
+    const handleLaneReturn = () => {
+        if (!launched) return;
+        resetBallToShooter();
+        setLaunched(false);
+    };
 
     return (
         <main className="relative h-screen w-screen overflow-hidden bg-surface">
@@ -736,18 +999,18 @@ function GamePage() {
                         <Tree key={i} position={pos} />
                     ))}
 
-                    {/* Big landmark domes */}
-                    <Landmark position={[-4.5, 0, -3.5]} color="#0d3b66" radius={1.1} height={0.7} />
-                    <Landmark position={[1.2, 0, -3.8]} color="#fdbc13" radius={0.9} height={1} />
+                    {/* Big landmark domes — bonus targets */}
+                    <Landmark position={[-4.5, 0, -3.5]} color="#0d3b66" radius={1.1} height={0.7} onHit={handleLandmarkHit} />
+                    <Landmark position={[1.2, 0, -3.8]} color="#fdbc13" radius={0.9} height={1} onHit={handleLandmarkHit} />
 
                     {/* Location pins */}
                     <LocationPin position={[-6.8, 0.6, -8.6]} label="OG Eatery" />
                     <LocationPin position={[-0.3, 0.6, -1]} label="Hostaria Restaurant" />
 
-                    {/* Playfield bumpers */}
-                    <PinballBumper position={[-3, 0.2, -1]} color="#ba1a1a" />
-                    <PinballBumper position={[0, 0.2, -2.2]} color="#fdbc13" />
-                    <PinballBumper position={[3, 0.2, -1]} color="#00263f" />
+                    {/* Playfield bumpers — collision scoring + kick */}
+                    <PinballBumper position={[-3, 0.2, -1]} color="#ba1a1a" onHit={handleBumperHit} />
+                    <PinballBumper position={[0, 0.2, -2.2]} color="#fdbc13" onHit={handleBumperHit} />
+                    <PinballBumper position={[3, 0.2, -1]} color="#00263f" onHit={handleBumperHit} />
 
                     {/* Flippers */}
                     <Flipper position={[-1.6, 0.15, 5]} rotation={[0, 0, -0.12]} side="left" />
@@ -760,8 +1023,8 @@ function GamePage() {
                     {/* Keep the ball on the playfield */}
                     <PlayfieldWalls />
 
-                    {/* Launch tube: the ball starts here */}
-                    <LaunchTube powerRef={powerRef} />
+                    {/* Shooter lane: the ball starts here, top curve feeds the playfield */}
+                    <ShooterLane powerRef={powerRef} />
                     <PowerMeter powerRef={powerRef} />
 
                     {/* The ball starts stopped in the launch lane */}
@@ -769,9 +1032,12 @@ function GamePage() {
                     <LauncherController
                         bodyRef={ballRef}
                         powerRef={powerRef}
-                        onLaunch={() => setLaunched(true)}
+                        enabled={!launched && balls > 0}
+                        onLaunch={handleLaunch}
                     />
                     <BallController bodyRef={ballRef} launched={launched} />
+                    <DrainWatcher bodyRef={ballRef} launched={launched} onDrain={handleDrain} />
+                    <LaneWatcher bodyRef={ballRef} launched={launched} onBackToShooter={handleLaneReturn} />
                 </Physics>
 
                 {/* Fixed pinball camera angle — no orbit controls */}
