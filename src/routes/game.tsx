@@ -692,6 +692,74 @@ function LaneWatcher({
     return null;
 }
 
+/** Frees a ball wedged between two obstacles. If the ball barely changes
+ *  position over ~2.5s while live (displacement-based, so a rocking ball
+ *  still counts), it gets a random kick with a small hop — like shaking
+ *  a real machine. Skips the shooter lane (LaneWatcher owns that). */
+function StuckWatcher({
+    bodyRef,
+    launched,
+    onStuck,
+}: {
+    bodyRef: React.MutableRefObject<RapierRigidBody | null>;
+    launched: boolean;
+    onStuck: () => void;
+}) {
+    const launchedRef = useRef(launched);
+    launchedRef.current = launched;
+    const cbRef = useRef(onStuck);
+    cbRef.current = onStuck;
+    const anchor = useRef<{ x: number; y: number; z: number } | null>(null);
+    const frames = useRef(0);
+    const cooldown = useRef(0);
+
+    useFrame(() => {
+        const body = bodyRef.current;
+        if (!body || !launchedRef.current) {
+            anchor.current = null;
+            frames.current = 0;
+            cooldown.current = 0;
+            return;
+        }
+        if (cooldown.current > 0) {
+            cooldown.current -= 1;
+            return;
+        }
+        let t: { x: number; y: number; z: number };
+        try {
+            t = body.translation();
+        } catch {
+            return;
+        }
+        const inLane = t.x > 10.7 && t.x < 13 && t.z > 5.5 && t.z < 13.2;
+        if (inLane || t.y > 2.5 || t.y < -2) {
+            anchor.current = null;
+            frames.current = 0;
+            return;
+        }
+        if (!anchor.current) {
+            anchor.current = { x: t.x, y: t.y, z: t.z };
+            frames.current = 0;
+            return;
+        }
+        frames.current += 1;
+        if (frames.current >= 150) {
+            const dx = t.x - anchor.current.x;
+            const dy = t.y - anchor.current.y;
+            const dz = t.z - anchor.current.z;
+            const moved = Math.hypot(dx, dy, dz);
+            anchor.current = { x: t.x, y: t.y, z: t.z };
+            frames.current = 0;
+            if (moved < 0.45) {
+                cooldown.current = 150;
+                cbRef.current();
+            }
+        }
+    });
+
+    return null;
+}
+
 /** Fixed walls around the playfield so the ball never leaves the boards. */
 function PlayfieldWalls() {
     return (
@@ -722,12 +790,14 @@ function HUD({
     balls,
     multiplier,
     launched,
+    notice,
 }: {
     score: number;
     highScore: number;
     balls: number;
     multiplier: number;
     launched: boolean;
+    notice: string | null;
 }) {
     return (
         <div className="pointer-events-none absolute inset-0 z-10">
@@ -755,6 +825,12 @@ function HUD({
                     </div>
                 </div>
             </div>
+
+            {notice && (
+                <div className="absolute bottom-24 left-1/2 -translate-x-1/2 rounded-full bg-secondary-container px-4 py-2 text-sm font-bold text-on-secondary-container shadow-md">
+                    {notice}
+                </div>
+            )}
 
             <div className="absolute bottom-6 left-4 right-4 flex items-center justify-between">
                 <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 backdrop-blur-sm shadow-md">
@@ -830,7 +906,7 @@ const BUILDINGS: {
     { position: [-7.6, 0, 0.4], size: [0.8, 0.65, 1.6], color: "#f2e6d0", roof: "flat" },
     { position: [7.7, 0, -1.2], size: [0.9, 0.7, 0.9], color: "#e0b9a8", roof: "pitched" },
     { position: [7.2, 0, 1.8], size: [1.2, 1.5, 1.2], color: "#c9d3dc", roof: "flat" },
-    { position: [-2.2, 0, -4.8], size: [0.9, 0.7, 0.9], color: "#f2e6d0", roof: "pitched" },
+    { position: [-2.95, 0, -4.8], size: [0.9, 0.7, 0.9], color: "#f2e6d0", roof: "pitched" },
     { position: [2.4, 0, -4.6], size: [0.8, 0.65, 0.8], color: "#e8d9c0", roof: "pitched" },
     { position: [-1.2, 0, 0.6], size: [1.3, 0.7, 0.8], color: "#f4c9a8", roof: "flat" },
     { position: [4.2, 0, -1.8], size: [1, 1.6, 1], color: "#dce5ee", roof: "flat" },
@@ -866,11 +942,13 @@ function GamePage() {
     const [balls, setBalls] = useState(3);
     const [multiplier, setMultiplier] = useState(1);
     const [launched, setLaunched] = useState(false);
+    const [notice, setNotice] = useState<string | null>(null);
     const ballRef = useRef<RapierRigidBody | null>(null);
     const powerRef = useRef(0);
     const hitsRef = useRef(0);
     const multiplierRef = useRef(1);
     const drainingRef = useRef(false);
+    const noticeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
     const LAUNCH_SPOT = useMemo(
         () => ({ x: 11.85, y: 1.2, z: 11 }),
         [],
@@ -924,6 +1002,29 @@ function GamePage() {
         setLaunched(true);
     };
 
+    const flashNotice = (text: string) => {
+        setNotice(text);
+        if (noticeTimeout.current) clearTimeout(noticeTimeout.current);
+        noticeTimeout.current = setTimeout(() => setNotice(null), 1600);
+    };
+
+    /** Random kick to free a wedged ball — doesn't score, just keeps play moving. */
+    const handleStuck = () => {
+        if (!launched) return;
+        const body = ballRef.current;
+        if (!body) return;
+        try {
+            const angle = Math.random() * Math.PI * 2;
+            body.applyImpulse(
+                { x: Math.cos(angle) * 5, y: 2.0, z: Math.sin(angle) * 5 },
+                true,
+            );
+        } catch {
+            /* physics not ready yet */
+        }
+        flashNotice("Stuck ball — auto nudge!");
+    };
+
     const resetBallToShooter = () => {
         const body = ballRef.current;
         try {
@@ -959,7 +1060,7 @@ function GamePage() {
 
     return (
         <main className="relative h-screen w-screen overflow-hidden bg-surface">
-            <HUD score={score} highScore={highScore} balls={balls} multiplier={multiplier} launched={launched} />
+            <HUD score={score} highScore={highScore} balls={balls} multiplier={multiplier} launched={launched} notice={notice} />
 
             <Canvas shadows camera={{ position: [0, 16, 12], fov: 45 }}>
                 <color attach="background" args={["#eaf3e6"]} />
@@ -1038,6 +1139,7 @@ function GamePage() {
                     <BallController bodyRef={ballRef} launched={launched} />
                     <DrainWatcher bodyRef={ballRef} launched={launched} onDrain={handleDrain} />
                     <LaneWatcher bodyRef={ballRef} launched={launched} onBackToShooter={handleLaneReturn} />
+                    <StuckWatcher bodyRef={ballRef} launched={launched} onStuck={handleStuck} />
                 </Physics>
 
                 {/* Fixed pinball camera angle — no orbit controls */}
