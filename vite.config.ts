@@ -19,6 +19,10 @@ const config = defineConfig({
     devOptions: {
       enabled: true,
     },
+    workbox: {
+      // Game bundle (three.js + rapier) exceeds workbox's 2 MiB precache default
+      maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+    },
     manifest: {
       name: "Blantyre Pinball",
       short_name: "Pinball",
