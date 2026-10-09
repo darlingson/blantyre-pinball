@@ -31,6 +31,10 @@ interface WallSegment {
 	slingshotNormal?: { x: number; y: number };
 	isDropTarget?: boolean;
 	targetIndex?: number;
+	/** Balls moving up fast pass straight through (one-way gate) */
+	isOneWay?: boolean;
+	/** Physics only — never drawn (e.g. the spring tip under its own art) */
+	noDraw?: boolean;
 }
 
 interface BumperNode {
@@ -88,6 +92,10 @@ interface BallState {
 const VAULT_X = 110;
 const VAULT_Y = 208;
 
+// Seat position: parked on top of the plunger spring
+const SEAT_X = 500;
+const SEAT_Y = 668;
+
 // CBD standup targets: the old government-triangle avenues + Victoria
 const TRI_TARGETS = [
 	{ x: 140, y: 420, label: "VICTORIA" },
@@ -127,8 +135,8 @@ export function PinballCanvas({
 	// Physics state stored in ref
 	const physicsRef = useRef({
 		ball: {
-			x: 500,
-			y: 665,
+			x: SEAT_X,
+			y: SEAT_Y,
 			vx: 0,
 			vy: 0,
 			radius: 10.5,
@@ -156,6 +164,12 @@ export function PinballCanvas({
 		plungerCharge: 0,
 		oneWayGateClosed: false,
 		loopCaptureTimer: 0,
+		loopCooldown: 0,
+		vaultCooldown: 0,
+		stuckX: SEAT_X,
+		stuckY: SEAT_Y,
+		stuckN: 0,
+		stuckCd: 0,
 		ballSaveTimer: 0,
 		score: 0,
 		roundStartScore: 0,
@@ -272,18 +286,25 @@ export function PinballCanvas({
 	// Reset ball to plunger lane
 	const resetBallToPlunger = (message: string) => {
 		const p = physicsRef.current;
-		p.ball.x = 500;
-		p.ball.y = 665;
+		p.ball.x = SEAT_X;
+		p.ball.y = SEAT_Y;
 		p.ball.vx = 0;
 		p.ball.vy = 0;
 		p.ball.trail = [];
 		p.plungerCharge = 0;
 		p.oneWayGateClosed = false;
 		p.loopCaptureTimer = 0;
+		p.loopCooldown = 0;
 		p.vaultCaptureTimer = 0;
+		p.vaultCooldown = 0;
 		p.hasLaunched = false;
 		p.ballSaveTimer = 0;
 		p.isTilted = false;
+		p.tiltWarningCount = 0;
+		p.stuckN = 0;
+		p.stuckCd = 0;
+		p.stuckX = p.ball.x;
+		p.stuckY = p.ball.y;
 		p.statusMessage = message;
 		syncTelemetry();
 	};
@@ -318,6 +339,8 @@ export function PinballCanvas({
 		p.runwayTimer = 0;
 		p.expressIdle = 900;
 		p.expressWindow = 0;
+		p.loopCooldown = 0;
+		p.vaultCooldown = 0;
 		resetBallToPlunger("BALL 1 READY · HOLD SPACE TO LAUNCH");
 	}, [resetTrigger]);
 
@@ -343,7 +366,6 @@ export function PinballCanvas({
 
 		if (p.tiltWarningCount >= 3) {
 			p.isTilted = true;
-			p.statusMessage = "TILT! FLIPPERS LOCKED";
 			p.popups.push({
 				x: 250,
 				y: 420,
@@ -352,6 +374,25 @@ export function PinballCanvas({
 				alpha: 1.0,
 				vy: -0.6,
 			});
+			if (p.hasLaunched) {
+				// Tilt forfeits the live ball on the spot: clear everything
+				// playable and drop it down the drain. A fresh ball resets.
+				p.statusMessage = "TILT! BALL FORFEITED";
+				p.extraBalls = [];
+				p.multiball = false;
+				p.loopCaptureTimer = 0;
+				p.loopCooldown = 0;
+				p.vaultCaptureTimer = 0;
+				p.vaultCooldown = 0;
+				p.ballSaveTimer = 0;
+				p.ball.x = 250;
+				p.ball.y = 800;
+				p.ball.vx = 0;
+				p.ball.vy = 5;
+			} else {
+				// Tilted before launching: the lock lifts on the next launch
+				p.statusMessage = "TILT! FLIPPERS LOCKED";
+			}
 		} else {
 			p.statusMessage = `CAREFUL: TABLE NUDGE (${p.tiltWarningCount}/3 TILT)`;
 			p.popups.push({
@@ -526,16 +567,20 @@ export function PinballCanvas({
 				{ x1: 478, y1: 720, x2: 520, y2: 720, restitution: 0.2 },
 				// Plunger inner divider wall
 				{ x1: 478, y1: 175, x2: 478, y2: 720 },
+				// Spring tip: the physical pad the ball actually rests on.
+				// It sits exactly under the spring crossbar art (y 678).
+				{ x1: 482, y1: 678, x2: 518, y2: 678, restitution: 0.1, noDraw: true },
 
-				// Left inlane & flipper guide
+				// Left inlane guide: a single sloped floor running straight to
+				// the left flipper pivot. Deliberately one wall, not two — a
+				// second wall meeting it at the pivot would form a V-wedge
+				// that narrows below ball width and traps balls permanently.
 				{ x1: 58, y1: 630, x2: 162, y2: 696, restitution: 0.45 },
 				{ x1: 96, y1: 545, x2: 96, y2: 615 },
-				{ x1: 96, y1: 615, x2: 162, y2: 696 },
 
-				// Right inlane & flipper guide
+				// Right inlane guide: same single-floor construction, mirrored
 				{ x1: 442, y1: 630, x2: 338, y2: 696, restitution: 0.45 },
 				{ x1: 404, y1: 545, x2: 404, y2: 615 },
-				{ x1: 404, y1: 615, x2: 338, y2: 696 },
 				// Right outer playfield boundary above outlane
 				{ x1: 442, y1: 340, x2: 442, y2: 630 },
 
@@ -567,9 +612,17 @@ export function PinballCanvas({
 				{ x1: 432, y1: 175, x2: 454, y2: 265 },
 			];
 
-			// One-way gate preventing ball from falling back into plunger lane
+			// One-way gate: launched balls pass straight through it, but
+			// nothing can fall back down the shooter lane
 			if (p.oneWayGateClosed) {
-				walls.push({ x1: 478, y1: 175, x2: 520, y2: 145, restitution: 0.7 });
+				walls.push({
+					x1: 478,
+					y1: 175,
+					x2: 520,
+					y2: 145,
+					restitution: 0.7,
+					isOneWay: true,
+				});
 			}
 
 			// 3 Chileka Airport Drop Targets along Left Ridge
@@ -651,6 +704,8 @@ export function PinballCanvas({
 					p.statusMessage = "RUNWAY CLOSED";
 				}
 			}
+			if (p.loopCooldown > 0) p.loopCooldown -= 1;
+			if (p.vaultCooldown > 0) p.vaultCooldown -= 1;
 
 			// Limbe Express schedule: a timed double-points window on the kicker
 			if (p.expressWindow > 0) {
@@ -681,6 +736,9 @@ export function PinballCanvas({
 				soundFX.playPlungerLaunch(charge / 100);
 				p.plungerCharge = 0;
 				p.hasLaunched = true;
+				// A fresh launch starts with a clean tilt slate
+				p.tiltWarningCount = 0;
+				p.isTilted = false;
 				p.ballSaveTimer = 15; // 15s ball save on launch
 				// Chipembere skill shot: launch-power zones pay out off the plunger
 				let zoneName = "CITY LIMITS";
@@ -699,16 +757,13 @@ export function PinballCanvas({
 			}
 
 			// Capture states hold the main ball (loop kicker + vault) while any
-			// extra multiball keeps rolling underneath
+			// extra multiball keeps rolling underneath. Ejects fire the moment
+			// the timer hits zero (no re-park, or the kick would be destroyed)
+			// and arm an entry cooldown so the ball can't instantly recapture.
 			let mainParked = false;
 			if (p.loopCaptureTimer > 0) {
 				p.loopCaptureTimer -= 1;
-				p.ball.x = 398 + Math.sin(p.loopCaptureTimer * 0.5) * 2.5;
-				p.ball.y = 215 + Math.cos(p.loopCaptureTimer * 0.5) * 2.5;
-				p.ball.vx = 0;
-				p.ball.vy = 0;
-
-				if (p.loopCaptureTimer === 1) {
+				if (p.loopCaptureTimer === 0) {
 					// Eject with a strong kick toward the center bumpers
 					const ejectAngle = Math.PI * 0.72 + (Math.random() - 0.5) * 0.22;
 					const speed = 15.5;
@@ -716,17 +771,18 @@ export function PinballCanvas({
 					p.ball.vy = Math.sin(ejectAngle) * speed;
 					spawnParticles(398, 215, "#10B981", 16);
 					soundFX.playPlungerLaunch(0.9);
+					p.loopCooldown = 45;
+				} else {
+					p.ball.x = 398 + Math.sin(p.loopCaptureTimer * 0.5) * 2.5;
+					p.ball.y = 215 + Math.cos(p.loopCaptureTimer * 0.5) * 2.5;
+					p.ball.vx = 0;
+					p.ball.vy = 0;
+					mainParked = true;
 				}
-				mainParked = true;
 			}
 			if (p.vaultCaptureTimer > 0) {
 				p.vaultCaptureTimer -= 1;
-				p.ball.x = VAULT_X + Math.sin(p.vaultCaptureTimer * 0.5) * 2.5;
-				p.ball.y = VAULT_Y + Math.cos(p.vaultCaptureTimer * 0.5) * 2.5;
-				p.ball.vx = 0;
-				p.ball.vy = 0;
-
-				if (p.vaultCaptureTimer === 1) {
+				if (p.vaultCaptureTimer === 0) {
 					if (p.vaultLocks >= 3) {
 						startMultiball();
 					} else {
@@ -738,8 +794,55 @@ export function PinballCanvas({
 						spawnParticles(VAULT_X, VAULT_Y, "#F59E0B", 12);
 						soundFX.playPlungerLaunch(0.7);
 					}
+					p.vaultCooldown = 45;
+				} else {
+					p.ball.x = VAULT_X + Math.sin(p.vaultCaptureTimer * 0.5) * 2.5;
+					p.ball.y = VAULT_Y + Math.cos(p.vaultCaptureTimer * 0.5) * 2.5;
+					p.ball.vx = 0;
+					p.ball.vy = 0;
+					mainParked = true;
 				}
-				mainParked = true;
+			}
+
+			// Anti-stuck nudge: a live main ball that barely moves gets a kick
+			// instead of parking forever. Parked pre-launch balls, captures,
+			// the lane, and the drain approach are left alone — and while a
+			// flipper is held the player is in control, so hands off.
+			const flipping = ctrl.left || ctrl.right;
+			const stuckSafe =
+				!p.hasLaunched ||
+				mainParked ||
+				flipping ||
+				p.ball.x >= 474 ||
+				p.ball.y >= 740;
+			if (stuckSafe) {
+				p.stuckN = 0;
+				p.stuckX = p.ball.x;
+				p.stuckY = p.ball.y;
+			} else if (p.stuckCd > 0) {
+				p.stuckCd -= 1;
+			} else {
+				p.stuckN += 1;
+				if (p.stuckN >= 150) {
+					const moved = Math.hypot(p.ball.x - p.stuckX, p.ball.y - p.stuckY);
+					p.stuckX = p.ball.x;
+					p.stuckY = p.ball.y;
+					p.stuckN = 0;
+					if (moved < 8) {
+						p.stuckCd = 300;
+						p.ball.vx += (Math.random() - 0.5) * 8;
+						p.ball.vy -= 7;
+						soundFX.playNudge();
+						p.popups.push({
+							x: p.ball.x,
+							y: p.ball.y - 20,
+							text: "STUCK — AUTO NUDGE",
+							color: "#F59E0B",
+							alpha: 1.0,
+							vy: -1.1,
+						});
+					}
+				}
 			}
 
 			// Sub-stepped physics integration (8 sub-steps per frame for zero-tunneling)
@@ -797,6 +900,8 @@ export function PinballCanvas({
 
 					// 1. Collide with static walls, slingshots, and drop targets
 					for (const wall of walls) {
+						// One-way gate: fast upward balls fly straight through
+						if (wall.isOneWay && ball.vy < -2) continue;
 						const closest = closestPointOnSegment(
 							ball.x,
 							ball.y,
@@ -1054,6 +1159,7 @@ export function PinballCanvas({
 				distLoop < 18 &&
 				p.loopCaptureTimer === 0 &&
 				p.vaultCaptureTimer === 0 &&
+				p.loopCooldown === 0 &&
 				!p.isTilted
 			) {
 				p.loopCaptureTimer = 52; // ~0.85s lock
@@ -1070,6 +1176,7 @@ export function PinballCanvas({
 				distVault < 16 &&
 				p.vaultCaptureTimer === 0 &&
 				p.loopCaptureTimer === 0 &&
+				p.vaultCooldown === 0 &&
 				!p.isTilted
 			) {
 				p.vaultCaptureTimer = 45; // ~0.75s lock
@@ -1146,21 +1253,41 @@ export function PinballCanvas({
 				}
 			}
 
-			// Parked-ball recovery: a live ball settled in the shooter lane
-			// relaunches itself instead of soft-locking the table
+			// Lane recovery: a launched main ball that dribbles back down the
+			// shooter lane parks on the pad for a proper retry; a settled
+			// extra ball kicks itself back out so multiball can't soft-lock
 			if (p.hasLaunched) {
-				for (const ball of liveBalls) {
-					const speed = Math.hypot(ball.vx, ball.vy);
-					if (ball.x > 474 && ball.y > 540 && speed < 0.7) {
-						ball.stillFrames += 1;
-						if (ball.stillFrames > 120) {
-							ball.stillFrames = 0;
-							ball.vx = -0.8;
-							ball.vy = -22;
+				const mainSpeed = Math.hypot(p.ball.vx, p.ball.vy);
+				const mainInLane = p.ball.x > 474 && p.ball.y > 540;
+				const mainOnPad =
+					Math.abs(p.ball.x - SEAT_X) < 3 && Math.abs(p.ball.y - SEAT_Y) < 3;
+				if (mainInLane && mainSpeed < 0.7 && !mainOnPad) {
+					p.ball.stillFrames += 1;
+					if (p.ball.stillFrames > 120) {
+						p.ball.stillFrames = 0;
+						p.ball.x = SEAT_X;
+						p.ball.y = SEAT_Y;
+						p.ball.vx = 0;
+						p.ball.vy = 0;
+						p.plungerCharge = 0;
+						p.oneWayGateClosed = false;
+						p.statusMessage = "BACK ON THE PAD — HOLD SPACE";
+					}
+				} else {
+					p.ball.stillFrames = 0;
+				}
+				for (const extra of p.extraBalls) {
+					const speed = Math.hypot(extra.vx, extra.vy);
+					if (extra.x > 474 && extra.y > 540 && speed < 0.7) {
+						extra.stillFrames += 1;
+						if (extra.stillFrames > 120) {
+							extra.stillFrames = 0;
+							extra.vx = -0.8;
+							extra.vy = -22;
 							soundFX.playPlungerLaunch(0.5);
 						}
 					} else {
-						ball.stillFrames = 0;
+						extra.stillFrames = 0;
 					}
 				}
 			}
@@ -1431,6 +1558,7 @@ export function PinballCanvas({
 			// 7. Render Table Walls, Slingshots & Chileka Drop Targets
 			const walls = getTableWalls();
 			walls.forEach((w) => {
+				if (w.noDraw) return;
 				ctx.beginPath();
 				ctx.moveTo(w.x1, w.y1);
 				ctx.lineTo(w.x2, w.y2);
