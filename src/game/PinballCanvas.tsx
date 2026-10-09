@@ -33,6 +33,8 @@ interface WallSegment {
 	targetIndex?: number;
 	/** Balls moving up fast pass straight through (one-way gate) */
 	isOneWay?: boolean;
+	/** Upward-velocity threshold for the pass-through; below it collides */
+	oneWayVy?: number;
 	/** Physics only — never drawn (e.g. the spring tip under its own art) */
 	noDraw?: boolean;
 }
@@ -567,9 +569,21 @@ export function PinballCanvas({
 				{ x1: 478, y1: 720, x2: 520, y2: 720, restitution: 0.2 },
 				// Plunger inner divider wall
 				{ x1: 478, y1: 175, x2: 478, y2: 720 },
-				// Spring tip: the physical pad the ball actually rests on.
-				// It sits exactly under the spring crossbar art (y 678).
-				{ x1: 482, y1: 678, x2: 518, y2: 678, restitution: 0.1, noDraw: true },
+				// Spring tip: the physical pad the ball actually rests on. It
+				// rides down with the charge exactly like the spring crossbar
+				// art, so the ball compresses the spring instead of floating.
+				// Anything moving up passes through (launches never collide
+				// with the tip snapping back), anything falling lands on it.
+				{
+					x1: 482,
+					y1: 678 + p.plungerCharge * 0.34,
+					x2: 518,
+					y2: 678 + p.plungerCharge * 0.34,
+					restitution: 0.1,
+					noDraw: true,
+					isOneWay: true,
+					oneWayVy: 0,
+				},
 
 				// Left inlane guide: a single sloped floor running straight to
 				// the left flipper pivot. Deliberately one wall, not two — a
@@ -622,6 +636,7 @@ export function PinballCanvas({
 					y2: 145,
 					restitution: 0.7,
 					isOneWay: true,
+					oneWayVy: -2,
 				});
 			}
 
@@ -900,8 +915,11 @@ export function PinballCanvas({
 
 					// 1. Collide with static walls, slingshots, and drop targets
 					for (const wall of walls) {
-						// One-way gate: fast upward balls fly straight through
-						if (wall.isOneWay && ball.vy < -2) continue;
+						// One-way surfaces: pass through when moving up fast
+						// enough, collide otherwise (gate blocks fall-backs,
+						// spring tip catches falls but never stops a launch)
+						if (wall.isOneWay && ball.vy < (wall.oneWayVy ?? -2))
+							continue;
 						const closest = closestPointOnSegment(
 							ball.x,
 							ball.y,
