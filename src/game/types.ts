@@ -13,11 +13,7 @@ export interface RankTier {
 	badgeCode: string;
 }
 
-export type MissionActionType =
-	| "BUMPERS"
-	| "DROP_TARGETS"
-	| "WORMHOLE"
-	| "RAMPS";
+export type MissionActionType = "BUMPERS" | "DROP_TARGETS" | "LOOP" | "RAMPS";
 
 export interface MissionDef {
 	id: string;
@@ -71,52 +67,52 @@ export interface RoundSummary {
 export const BLANTYRE_RANKS: RankTier[] = [
 	{
 		level: 1,
-		title: "Chichiri Cadet",
+		title: "Chichiri Rookie",
 		landmark: "Chichiri Trade Fair Grounds",
 		minScore: 0,
-		badgeCode: "CADET-01",
+		badgeCode: "RK-01",
 	},
 	{
 		level: 2,
-		title: "Ndirande Scout",
+		title: "Ndirande Amateur",
 		landmark: "Ndirande Mountain Ridge",
 		minScore: 15000,
-		badgeCode: "SCOUT-02",
+		badgeCode: "AM-02",
 	},
 	{
 		level: 3,
-		title: "Soche Navigator",
+		title: "Soche Semi-Pro",
 		landmark: "Soche Hill Beacon",
 		minScore: 45000,
-		badgeCode: "NAV-03",
+		badgeCode: "SEMI-03",
 	},
 	{
 		level: 4,
-		title: "Michiru Ranger",
+		title: "Michiru Professional",
 		landmark: "Michiru Nature Sanctuary",
 		minScore: 95000,
-		badgeCode: "RNG-04",
+		badgeCode: "PRO-04",
 	},
 	{
 		level: 5,
 		title: "Victoria Avenue Captain",
-		landmark: "Mount Soche Spire",
+		landmark: "Victoria Avenue",
 		minScore: 175000,
 		badgeCode: "CAPT-05",
 	},
 	{
 		level: 6,
-		title: "Kabula Commander",
+		title: "Kabula Champion",
 		landmark: "St. Michael & All Angels",
 		minScore: 300000,
-		badgeCode: "CMDR-06",
+		badgeCode: "CHMP-06",
 	},
 	{
 		level: 7,
-		title: "Mulanje Fleet Admiral",
-		landmark: "Sapitwa Orbital Relay",
+		title: "Mulanje Legend",
+		landmark: "Sapitwa Peak",
 		minScore: 500000,
-		badgeCode: "ADM-07",
+		badgeCode: "LGD-07",
 	},
 ];
 
@@ -126,37 +122,36 @@ export const BLANTYRE_MISSIONS: MissionDef[] = [
 		title: "Michiru Peak Survey",
 		location: "Upper Bumper Tri-Cluster",
 		description:
-			"Strike the Michiru, Soche, and Ndirande jet bumpers 8 times to calibrate orbital sensors.",
+			"Strike the Michiru, Soche, and Ndirande bumpers 8 times to light the trail.",
 		targetGoal: 8,
 		rewardScore: 15000,
 		actionType: "BUMPERS",
 	},
 	{
 		id: "chileka-approach",
-		title: "Chileka Radar Lock",
+		title: "Chileka Approach",
 		location: "Left Bank Drop Targets",
-		description:
-			"Knock down all 3 Chileka Radar drop targets to clear the approach corridor.",
+		description: "Knock down all 3 Chileka drop targets to clear the approach.",
 		targetGoal: 3,
 		rewardScore: 22500,
 		actionType: "DROP_TARGETS",
 	},
 	{
-		id: "chichiri-wormhole",
-		title: "Chichiri Dome Singularity",
-		location: "Right Orbital Kicker",
+		id: "chichiri-loop",
+		title: "Chichiri Loop Rush",
+		location: "Right Kicker Loop",
 		description:
-			"Lock the pinball inside the Chichiri Wormhole Kicker twice for hyper-launch.",
+			"Lock the ball inside the Chichiri loop kicker twice for a super launch.",
 		targetGoal: 2,
 		rewardScore: 30000,
-		actionType: "WORMHOLE",
+		actionType: "LOOP",
 	},
 	{
 		id: "shire-express",
-		title: "Shire Highlands Overdrive",
-		location: "Outer Orbit & Rollovers",
+		title: "Shire Highlands Cruise",
+		location: "Outer Lanes & Rollovers",
 		description:
-			"Ignite upper orbit rollovers and bumpers 12 times to reach warp velocity.",
+			"Hit the upper rollovers and bumpers 12 times to reach full speed.",
 		targetGoal: 12,
 		rewardScore: 40000,
 		actionType: "BUMPERS",

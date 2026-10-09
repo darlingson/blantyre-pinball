@@ -163,7 +163,7 @@ class ArcadeSoundSystem {
 		osc.stop(now + 0.3);
 	}
 
-	public playWormholeCapture() {
+	public playLoopCapture() {
 		const ctx = this.getContext();
 		if (!ctx) return;
 

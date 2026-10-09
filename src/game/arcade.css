@@ -1,0 +1,19 @@
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap");
+
+/* Scoped dark-cabinet theme for the 2D pinball table route.
+ * Keeps the arcade look contained to the game page so the rest of the
+ * site stays on the daylight design tokens in styles.css. */
+.arcade {
+	background-color: #0b1120;
+	color: #f8fafc;
+	user-select: none;
+}
+
+.arcade-display {
+	font-family: "Orbitron", sans-serif;
+}
+
+.arcade-mono {
+	font-family: "JetBrains Mono", monospace;
+	font-variant-numeric: tabular-nums;
+}
