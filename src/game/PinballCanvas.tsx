@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { soundFX } from "./sound";
 import type { GameState, MissionActionType, TelemetrySnapshot } from "./types";
-import { BLANTYRE_MISSIONS, BLANTYRE_RANKS } from "./types";
+import { BLANTYRE_MISSIONS, BLANTYRE_RANKS, BLANTYRE_STREETS } from "./types";
 
 interface PinballCanvasProps {
 	gameState: GameState;
@@ -44,14 +44,16 @@ interface BumperNode {
 	color: string;
 }
 
-interface RolloverLane {
-	x: number;
-	y: number;
-	radius: number;
-	letterIndex: number;
-	letter: string;
-	cooldown: number;
-}
+const ROLLOVER_SPOTS = [
+	{ x: 168, y: 112 },
+	{ x: 222, y: 102 },
+	{ x: 278, y: 102 },
+	{ x: 332, y: 112 },
+	{ x: 96, y: 315 },
+	{ x: 404, y: 315 },
+	{ x: 86, y: 585 },
+	{ x: 414, y: 585 },
+];
 
 interface FloatingPopup {
 	x: number;
@@ -71,6 +73,28 @@ interface SparkParticle {
 	color: string;
 	alpha: number;
 }
+
+interface BallState {
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+	radius: number;
+	trail: { x: number; y: number }[];
+	stillFrames: number;
+}
+
+// Mandala Vault pocket (bank vault of Malawi's oldest building)
+const VAULT_X = 110;
+const VAULT_Y = 208;
+
+// CBD standup targets: the old government-triangle avenues + Victoria
+const TRI_TARGETS = [
+	{ x: 140, y: 420, label: "VICTORIA" },
+	{ x: 360, y: 420, label: "HENDERSON" },
+	{ x: 250, y: 590, label: "GLYN JONES" },
+	{ x: 200, y: 470, label: "HAILE SELASSIE" },
+];
 
 export function PinballCanvas({
 	gameState,
@@ -109,6 +133,7 @@ export function PinballCanvas({
 			vy: 0,
 			radius: 10.5,
 			trail: [] as { x: number; y: number }[],
+			stillFrames: 0,
 		},
 		leftFlipper: {
 			pivotX: 162,
@@ -194,18 +219,27 @@ export function PinballCanvas({
 				color: "#E879F9",
 			},
 		] as BumperNode[],
-		rollovers: [
-			{ x: 168, y: 112, radius: 13, letterIndex: 0, letter: "B", cooldown: 0 },
-			{ x: 222, y: 102, radius: 13, letterIndex: 1, letter: "L", cooldown: 0 },
-			{ x: 278, y: 102, radius: 13, letterIndex: 2, letter: "A", cooldown: 0 },
-			{ x: 332, y: 112, radius: 13, letterIndex: 3, letter: "N", cooldown: 0 },
-			{ x: 96, y: 315, radius: 13, letterIndex: 4, letter: "T", cooldown: 0 },
-			{ x: 404, y: 315, radius: 13, letterIndex: 5, letter: "Y", cooldown: 0 },
-			{ x: 86, y: 585, radius: 13, letterIndex: 6, letter: "R", cooldown: 0 },
-			{ x: 414, y: 585, radius: 13, letterIndex: 7, letter: "E", cooldown: 0 },
-		] as RolloverLane[],
+		rollovers: ROLLOVER_SPOTS.map((spot, i) => ({
+			...spot,
+			radius: 13,
+			letterIndex: i,
+			letter: BLANTYRE_STREETS[i].letter,
+			road: BLANTYRE_STREETS[i].road,
+			cooldown: 0,
+		})),
 		slingshotFlashLeft: 0,
 		slingshotFlashRight: 0,
+		extraBalls: [] as BallState[],
+		multiball: false,
+		hasLaunched: false,
+		vaultLocks: 0,
+		vaultCaptureTimer: 0,
+		triangleLit: [false, false, false, false],
+		triCooldown: [0, 0, 0, 0],
+		triRearm: 0,
+		runwayTimer: 0,
+		expressIdle: 900,
+		expressWindow: 0,
 	});
 
 	// Helper to emit telemetry snapshot to React HUD
@@ -246,6 +280,8 @@ export function PinballCanvas({
 		p.plungerCharge = 0;
 		p.oneWayGateClosed = false;
 		p.loopCaptureTimer = 0;
+		p.vaultCaptureTimer = 0;
+		p.hasLaunched = false;
 		p.ballSaveTimer = 0;
 		p.isTilted = false;
 		p.statusMessage = message;
@@ -273,6 +309,15 @@ export function PinballCanvas({
 		p.bumperUpgradeLevel = 1;
 		p.popups = [];
 		p.particles = [];
+		p.extraBalls = [];
+		p.multiball = false;
+		p.vaultLocks = 0;
+		p.triangleLit = [false, false, false, false];
+		p.triCooldown = [0, 0, 0, 0];
+		p.triRearm = 0;
+		p.runwayTimer = 0;
+		p.expressIdle = 900;
+		p.expressWindow = 0;
 		resetBallToPlunger("BALL 1 READY · HOLD SPACE TO LAUNCH");
 	}, [resetTrigger]);
 
@@ -288,10 +333,12 @@ export function PinballCanvas({
 		p.tableShakeX = (Math.random() > 0.5 ? 1 : -1) * 7;
 		p.tableShakeY = -5;
 
-		// Apply physical impulse to ball if in playfield
-		if (p.ball.x < 474) {
-			p.ball.vx += (Math.random() - 0.5) * 4.5;
-			p.ball.vy -= 2.6;
+		// Apply physical impulse to every live ball if in playfield
+		for (const ball of [p.ball, ...p.extraBalls]) {
+			if (ball.x < 474) {
+				ball.vx += (Math.random() - 0.5) * 4.5;
+				ball.vy -= 2.6;
+			}
 		}
 
 		if (p.tiltWarningCount >= 3) {
@@ -339,7 +386,7 @@ export function PinballCanvas({
 		) => {
 			const p = physicsRef.current;
 			if (p.isTilted) return;
-			const totalPts = basePts * p.multiplier;
+			const totalPts = basePts * p.multiplier * (p.multiball ? 2 : 1);
 			p.score += totalPts;
 
 			if (p.score > p.highScore) {
@@ -429,6 +476,38 @@ export function PinballCanvas({
 			}
 		};
 
+		// Third vault lock: open the Mandala Vault — two balls, double points
+		const startMultiball = () => {
+			const p = physicsRef.current;
+			p.vaultLocks = 0;
+			p.multiball = true;
+			p.ballSaveTimer = Math.max(p.ballSaveTimer, 10);
+			const ejectAngle =
+				Math.atan2(195 - VAULT_Y, 250 - VAULT_X) + (Math.random() - 0.5) * 0.2;
+			p.ball.vx = Math.cos(ejectAngle) * 14;
+			p.ball.vy = Math.sin(ejectAngle) * 14;
+			p.extraBalls.push({
+				x: 250,
+				y: 420,
+				vx: -7,
+				vy: -9,
+				radius: 10.5,
+				trail: [],
+				stillFrames: 0,
+			});
+			spawnParticles(VAULT_X, VAULT_Y, "#F59E0B", 18);
+			soundFX.playRankPromotion();
+			p.popups.push({
+				x: 250,
+				y: 380,
+				text: "MULTIBALL — JACKPOT ×2",
+				color: "#F59E0B",
+				alpha: 1.3,
+				vy: -0.7,
+			});
+			p.statusMessage = "MULTIBALL! ALL POINTS ×2";
+		};
+
 		// Build table geometry segments
 		const getTableWalls = (): WallSegment[] => {
 			const p = physicsRef.current;
@@ -460,7 +539,7 @@ export function PinballCanvas({
 				// Right outer playfield boundary above outlane
 				{ x1: 442, y1: 340, x2: 442, y2: 630 },
 
-				// Left Slingshot Triangle (Victoria Ave Kicker)
+				// Left Slingshot Triangle (Limbe Market Kicker)
 				{
 					x1: 118,
 					y1: 530,
@@ -472,7 +551,7 @@ export function PinballCanvas({
 				{ x1: 118, y1: 530, x2: 118, y2: 612 },
 				{ x1: 118, y1: 612, x2: 172, y2: 634 },
 
-				// Right Slingshot Triangle (Limbe Kicker)
+				// Right Slingshot Triangle
 				{
 					x1: 382,
 					y1: 530,
@@ -493,7 +572,7 @@ export function PinballCanvas({
 				walls.push({ x1: 478, y1: 175, x2: 520, y2: 145, restitution: 0.7 });
 			}
 
-			// 3 Chileka Drop Targets along Left Ridge
+			// 3 Chileka Airport Drop Targets along Left Ridge
 			const dropCoords = [
 				{ x1: 74, y1: 365, x2: 86, y2: 402 },
 				{ x1: 74, y1: 412, x2: 86, y2: 449 },
@@ -556,25 +635,72 @@ export function PinballCanvas({
 			p.rollovers.forEach((r) => {
 				if (r.cooldown > 0) r.cooldown -= 1;
 			});
+			for (let i = 0; i < p.triCooldown.length; i++) {
+				if (p.triCooldown[i] > 0) p.triCooldown[i] -= 1;
+			}
+			if (p.triRearm > 0) {
+				p.triRearm -= 1;
+				if (p.triRearm === 0) {
+					p.triangleLit = [false, false, false, false];
+				}
+			}
+			if (p.runwayTimer > 0) {
+				p.runwayTimer -= 1;
+				if (p.runwayTimer === 0) {
+					p.dropTargetsDown = [false, false, false];
+					p.statusMessage = "RUNWAY CLOSED";
+				}
+			}
+
+			// Limbe Express schedule: a timed double-points window on the kicker
+			if (p.expressWindow > 0) {
+				p.expressWindow -= 1;
+				if (p.expressWindow === 0) {
+					p.statusMessage = "LIMBE EXPRESS DEPARTED";
+				}
+			} else {
+				p.expressIdle -= 1;
+				if (p.expressIdle <= 0) {
+					p.expressWindow = 360; // 6s window
+					p.expressIdle = 1500; // ~25s until the next departure
+					soundFX.playTargetHit(true);
+					p.statusMessage = "LIMBE EXPRESS DEPARTING — LEFT KICKER ×3";
+				}
+			}
 
 			// Plunger charge & release logic
 			const ballInShooterLane = p.ball.x > 475 && p.ball.y > 540;
 			if (ctrl.plunger && ballInShooterLane) {
 				p.plungerCharge = Math.min(100, p.plungerCharge + 1.85);
 			} else if (!ctrl.plunger && p.plungerCharge > 4 && ballInShooterLane) {
+				const charge = p.plungerCharge;
 				const launchPower =
-					15.5 + (p.plungerCharge / 100) * 14.5 + (Math.random() - 0.5) * 0.9;
+					15.5 + (charge / 100) * 14.5 + (Math.random() - 0.5) * 0.9;
 				p.ball.vy = -launchPower;
 				p.ball.vx = -0.8;
-				soundFX.playPlungerLaunch(p.plungerCharge / 100);
+				soundFX.playPlungerLaunch(charge / 100);
 				p.plungerCharge = 0;
+				p.hasLaunched = true;
 				p.ballSaveTimer = 15; // 15s ball save on launch
-				p.statusMessage = "BALL LAUNCHED · BALL SAVE ACTIVE (15S)";
+				// Chipembere skill shot: launch-power zones pay out off the plunger
+				let zoneName = "CITY LIMITS";
+				let zonePts = 2000;
+				if (charge >= 75) {
+					zoneName = "FULL EXPRESS";
+					zonePts = 12000;
+				} else if (charge >= 35) {
+					zoneName = "HIGHWAY CRUISE";
+					zonePts = 5000;
+				}
+				addPoints(zonePts, 499, 300, zoneName, "#F59E0B");
+				p.statusMessage = `SKILL SHOT: ${zoneName} · BALL SAVE ACTIVE (15S)`;
 			} else if (!ctrl.plunger) {
 				p.plungerCharge = Math.max(0, p.plungerCharge - 6);
 			}
 
-			// Loop capture state (Chichiri Loop at x: 398, y: 215)
+			// Capture states hold the main ball (loop kicker + vault) while any
+			// extra multiball keeps rolling underneath
+			let mainParked = false;
 			if (p.loopCaptureTimer > 0) {
 				p.loopCaptureTimer -= 1;
 				p.ball.x = 398 + Math.sin(p.loopCaptureTimer * 0.5) * 2.5;
@@ -591,7 +717,29 @@ export function PinballCanvas({
 					spawnParticles(398, 215, "#10B981", 16);
 					soundFX.playPlungerLaunch(0.9);
 				}
-				return;
+				mainParked = true;
+			}
+			if (p.vaultCaptureTimer > 0) {
+				p.vaultCaptureTimer -= 1;
+				p.ball.x = VAULT_X + Math.sin(p.vaultCaptureTimer * 0.5) * 2.5;
+				p.ball.y = VAULT_Y + Math.cos(p.vaultCaptureTimer * 0.5) * 2.5;
+				p.ball.vx = 0;
+				p.ball.vy = 0;
+
+				if (p.vaultCaptureTimer === 1) {
+					if (p.vaultLocks >= 3) {
+						startMultiball();
+					} else {
+						const ejectAngle =
+							Math.atan2(195 - VAULT_Y, 250 - VAULT_X) +
+							(Math.random() - 0.5) * 0.2;
+						p.ball.vx = Math.cos(ejectAngle) * 14;
+						p.ball.vy = Math.sin(ejectAngle) * 14;
+						spawnParticles(VAULT_X, VAULT_Y, "#F59E0B", 12);
+						soundFX.playPlungerLaunch(0.7);
+					}
+				}
+				mainParked = true;
 			}
 
 			// Sub-stepped physics integration (8 sub-steps per frame for zero-tunneling)
@@ -631,194 +779,283 @@ export function PinballCanvas({
 
 			const walls = getTableWalls();
 
-			for (let step = 0; step < SUB_STEPS; step++) {
-				p.ball.vy += gravity;
-				p.ball.vx *= 0.9992 ** dt;
-				p.ball.vy *= 0.9992 ** dt;
+			// One full substep pass for a single ball; the main ball and any
+			// multiball extras share it so every ball scores and collides alike
+			const stepOneBall = (ball: BallState, isMain: boolean) => {
+				for (let step = 0; step < SUB_STEPS; step++) {
+					ball.vy += gravity;
+					ball.vx *= 0.9992 ** dt;
+					ball.vy *= 0.9992 ** dt;
 
-				p.ball.x += p.ball.vx * dt;
-				p.ball.y += p.ball.vy * dt;
+					ball.x += ball.vx * dt;
+					ball.y += ball.vy * dt;
 
-				// Close one-way gate once ball exits upper shooter lane into playfield
-				if (!p.oneWayGateClosed && p.ball.x < 462 && p.ball.y < 230) {
-					p.oneWayGateClosed = true;
-				}
+					// Close one-way gate once the main ball exits into the playfield
+					if (isMain && !p.oneWayGateClosed && ball.x < 462 && ball.y < 230) {
+						p.oneWayGateClosed = true;
+					}
 
-				// 1. Collide with static walls, slingshots, and drop targets
-				for (const wall of walls) {
-					const closest = closestPointOnSegment(
-						p.ball.x,
-						p.ball.y,
-						wall.x1,
-						wall.y1,
-						wall.x2,
-						wall.y2,
-					);
-					const dx = p.ball.x - closest.x;
-					const dy = p.ball.y - closest.y;
-					const dist = Math.hypot(dx, dy);
+					// 1. Collide with static walls, slingshots, and drop targets
+					for (const wall of walls) {
+						const closest = closestPointOnSegment(
+							ball.x,
+							ball.y,
+							wall.x1,
+							wall.y1,
+							wall.x2,
+							wall.y2,
+						);
+						const dx = ball.x - closest.x;
+						const dy = ball.y - closest.y;
+						const dist = Math.hypot(dx, dy);
 
-					if (dist < p.ball.radius && dist > 0.0001) {
-						const nx = dx / dist;
-						const ny = dy / dist;
+						if (dist < ball.radius && dist > 0.0001) {
+							const nx = dx / dist;
+							const ny = dy / dist;
 
-						// Resolve penetration
-						p.ball.x = closest.x + nx * p.ball.radius;
-						p.ball.y = closest.y + ny * p.ball.radius;
+							// Resolve penetration
+							ball.x = closest.x + nx * ball.radius;
+							ball.y = closest.y + ny * ball.radius;
 
-						const vn = p.ball.vx * nx + p.ball.vy * ny;
-						if (vn < 0) {
-							if (wall.isSlingshot && wall.slingshotNormal && !p.isTilted) {
-								p.ball.vx = wall.slingshotNormal.x * 13.5;
-								p.ball.vy = wall.slingshotNormal.y * 13.5;
-								if (wall.x1 < 250) {
-									p.slingshotFlashLeft = 10;
-								} else {
-									p.slingshotFlashRight = 10;
-								}
-								soundFX.playSlingshot();
-								addPoints(350, closest.x, closest.y, "KICKER", "#F59E0B");
-								spawnParticles(closest.x, closest.y, "#F59E0B", 7);
-							} else if (wall.isDropTarget && wall.targetIndex !== undefined) {
-								const rest = wall.restitution ?? 0.95;
-								p.ball.vx -= (1 + rest) * vn * nx;
-								p.ball.vy -= (1 + rest) * vn * ny;
-
-								p.dropTargetsDown[wall.targetIndex] = true;
-								advanceMission("DROP_TARGETS", 1);
-
-								const allDown = p.dropTargetsDown.every(Boolean);
-								soundFX.playTargetHit(allDown);
-								spawnParticles(closest.x, closest.y, "#38BDF8", 10);
-
-								if (allDown) {
+							const vn = ball.vx * nx + ball.vy * ny;
+							if (vn < 0) {
+								if (wall.isSlingshot && wall.slingshotNormal && !p.isTilted) {
+									ball.vx = wall.slingshotNormal.x * 13.5;
+									ball.vy = wall.slingshotNormal.y * 13.5;
+									const isLeft = wall.x1 < 250;
+									if (isLeft) {
+										p.slingshotFlashLeft = 10;
+									} else {
+										p.slingshotFlashRight = 10;
+									}
+									soundFX.playSlingshot();
+									// Limbe Express: timed triple points on the left kicker
+									let slingLabel = "KICKER";
+									let slingPts = 350;
+									if (isLeft) {
+										slingLabel = "LIMBE";
+										if (p.expressWindow > 0) {
+											slingLabel = "LIMBE EXPRESS";
+											slingPts = 1000;
+										}
+									}
 									addPoints(
-										5000,
-										closest.x + 30,
+										slingPts,
+										closest.x,
 										closest.y,
-										"CHILEKA CLEARED",
-										"#10B981",
+										slingLabel,
+										"#F59E0B",
 									);
-									p.multiplier = Math.min(8, p.multiplier + 1);
-									p.statusMessage = `CHILEKA CLEARED! MULTIPLIER UP TO ${p.multiplier}X`;
-									setTimeout(() => {
-										physicsRef.current.dropTargetsDown = [false, false, false];
-									}, 1400);
+									spawnParticles(
+										closest.x,
+										closest.y,
+										"#F59E0B",
+										slingPts > 350 ? 14 : 7,
+									);
+								} else if (
+									wall.isDropTarget &&
+									wall.targetIndex !== undefined
+								) {
+									const rest = wall.restitution ?? 0.95;
+									ball.vx -= (1 + rest) * vn * nx;
+									ball.vy -= (1 + rest) * vn * ny;
+
+									p.dropTargetsDown[wall.targetIndex] = true;
+									advanceMission("DROP_TARGETS", 1);
+
+									const allDown = p.dropTargetsDown.every(Boolean);
+									soundFX.playTargetHit(allDown);
+									spawnParticles(closest.x, closest.y, "#38BDF8", 10);
+
+									if (allDown) {
+										addPoints(
+											5000,
+											closest.x + 30,
+											closest.y,
+											"CHILEKA CLEARED",
+											"#10B981",
+										);
+										p.multiplier = Math.min(8, p.multiplier + 1);
+										// Runway opens: doubled lanes for 20s, then the
+										// bank resets when it closes
+										p.runwayTimer = 1200;
+										p.statusMessage = `CHILEKA CLEARED! MULTIPLIER UP TO ${p.multiplier}X · RUNWAY OPEN 20S`;
+									} else {
+										addPoints(
+											1000,
+											closest.x + 25,
+											closest.y,
+											"TARGET",
+											"#38BDF8",
+										);
+									}
 								} else {
-									addPoints(
-										1000,
-										closest.x + 25,
-										closest.y,
-										"TARGET",
-										"#38BDF8",
-									);
+									const rest = wall.restitution ?? 0.72;
+									ball.vx -= (1 + rest) * vn * nx;
+									ball.vy -= (1 + rest) * vn * ny;
 								}
-							} else {
-								const rest = wall.restitution ?? 0.72;
-								p.ball.vx -= (1 + rest) * vn * nx;
-								p.ball.vy -= (1 + rest) * vn * ny;
 							}
 						}
 					}
-				}
 
-				// 2. Collide with Flippers
-				const checkFlipperCollision = (flipper: typeof p.leftFlipper) => {
-					const tipX =
-						flipper.pivotX + Math.cos(flipper.angle) * flipper.length;
-					const tipY =
-						flipper.pivotY + Math.sin(flipper.angle) * flipper.length;
-					const closest = closestPointOnSegment(
-						p.ball.x,
-						p.ball.y,
-						flipper.pivotX,
-						flipper.pivotY,
-						tipX,
-						tipY,
-					);
-
-					const flipperThickness = 7.5;
-					const minDist = p.ball.radius + flipperThickness;
-					const dx = p.ball.x - closest.x;
-					const dy = p.ball.y - closest.y;
-					const dist = Math.hypot(dx, dy);
-
-					if (dist < minDist && dist > 0.0001) {
-						const nx = dx / dist;
-						const ny = dy / dist;
-
-						p.ball.x = closest.x + nx * minDist;
-						p.ball.y = closest.y + ny * minDist;
-
-						const vn = p.ball.vx * nx + p.ball.vy * ny;
-						const radiusArm = closest.t * flipper.length;
-						const swingBoost =
-							Math.abs(flipper.angularVelocity) * radiusArm * 2.4;
-
-						if (vn < 0) {
-							const restitution = 0.82;
-							p.ball.vx -= (1 + restitution) * vn * nx;
-							p.ball.vy -= (1 + restitution) * vn * ny;
-						}
-
-						if (swingBoost > 0.4 && !p.isTilted) {
-							p.ball.vx +=
-								nx * (swingBoost + 6.8) + (Math.random() - 0.5) * 0.7;
-							p.ball.vy += ny * (swingBoost + 8.5);
-						}
-					}
-				};
-
-				checkFlipperCollision(p.leftFlipper);
-				checkFlipperCollision(p.rightFlipper);
-
-				// 3. Collide with Jet Bumpers (Michiru, Soche, Ndirande, Kabula)
-				p.bumpers.forEach((bumper, idx) => {
-					const dx = p.ball.x - bumper.x;
-					const dy = p.ball.y - bumper.y;
-					const dist = Math.hypot(dx, dy);
-					const minDist = p.ball.radius + bumper.radius;
-
-					if (dist < minDist && dist > 0.0001) {
-						const nx = dx / dist;
-						const ny = dy / dist;
-
-						p.ball.x = bumper.x + nx * minDist;
-						p.ball.y = bumper.y + ny * minDist;
-
-						const bounceSpeed = Math.max(
-							10.5,
-							Math.hypot(p.ball.vx, p.ball.vy) * 1.12,
+					// 2. Collide with Flippers
+					const checkFlipperCollision = (flipper: typeof p.leftFlipper) => {
+						const tipX =
+							flipper.pivotX + Math.cos(flipper.angle) * flipper.length;
+						const tipY =
+							flipper.pivotY + Math.sin(flipper.angle) * flipper.length;
+						const closest = closestPointOnSegment(
+							ball.x,
+							ball.y,
+							flipper.pivotX,
+							flipper.pivotY,
+							tipX,
+							tipY,
 						);
-						p.ball.vx = nx * bounceSpeed;
-						p.ball.vy = ny * bounceSpeed;
 
-						if (bumper.hitTimer === 0 && !p.isTilted) {
-							bumper.hitTimer = 12;
-							soundFX.playBumper(idx + p.bumperUpgradeLevel);
-							const pts = bumper.basePoints * p.bumperUpgradeLevel;
-							addPoints(
-								pts,
-								bumper.x,
-								bumper.y - 18,
-								bumper.label,
-								bumper.color,
-							);
-							advanceMission("BUMPERS", 1);
-							spawnParticles(
-								bumper.x + nx * bumper.radius,
-								bumper.y + ny * bumper.radius,
-								bumper.color,
-								9,
-							);
+						const flipperThickness = 7.5;
+						const minDist = ball.radius + flipperThickness;
+						const dx = ball.x - closest.x;
+						const dy = ball.y - closest.y;
+						const dist = Math.hypot(dx, dy);
+
+						if (dist < minDist && dist > 0.0001) {
+							const nx = dx / dist;
+							const ny = dy / dist;
+
+							ball.x = closest.x + nx * minDist;
+							ball.y = closest.y + ny * minDist;
+
+							const vn = ball.vx * nx + ball.vy * ny;
+							const radiusArm = closest.t * flipper.length;
+							const swingBoost =
+								Math.abs(flipper.angularVelocity) * radiusArm * 2.4;
+
+							if (vn < 0) {
+								const restitution = 0.82;
+								ball.vx -= (1 + restitution) * vn * nx;
+								ball.vy -= (1 + restitution) * vn * ny;
+							}
+
+							if (swingBoost > 0.4 && !p.isTilted) {
+								ball.vx +=
+									nx * (swingBoost + 6.8) + (Math.random() - 0.5) * 0.7;
+								ball.vy += ny * (swingBoost + 8.5);
+							}
 						}
-					}
-				});
-			}
+					};
 
-			// 4. Check Chichiri Loop Kicker Pocket (x: 398, y: 215)
+					checkFlipperCollision(p.leftFlipper);
+					checkFlipperCollision(p.rightFlipper);
+
+					// 3. Collide with Jet Bumpers (Michiru, Soche, Ndirande, Kabula)
+					p.bumpers.forEach((bumper, idx) => {
+						const dx = ball.x - bumper.x;
+						const dy = ball.y - bumper.y;
+						const dist = Math.hypot(dx, dy);
+						const minDist = ball.radius + bumper.radius;
+
+						if (dist < minDist && dist > 0.0001) {
+							const nx = dx / dist;
+							const ny = dy / dist;
+
+							ball.x = bumper.x + nx * minDist;
+							ball.y = bumper.y + ny * minDist;
+
+							const bounceSpeed = Math.max(
+								10.5,
+								Math.hypot(ball.vx, ball.vy) * 1.12,
+							);
+							ball.vx = nx * bounceSpeed;
+							ball.vy = ny * bounceSpeed;
+
+							if (bumper.hitTimer === 0 && !p.isTilted) {
+								bumper.hitTimer = 12;
+								soundFX.playBumper(idx + p.bumperUpgradeLevel);
+								const pts = bumper.basePoints * p.bumperUpgradeLevel;
+								addPoints(
+									pts,
+									bumper.x,
+									bumper.y - 18,
+									bumper.label,
+									bumper.color,
+								);
+								advanceMission("BUMPERS", 1);
+								spawnParticles(
+									bumper.x + nx * bumper.radius,
+									bumper.y + ny * bumper.radius,
+									bumper.color,
+									9,
+								);
+							}
+						}
+					});
+
+					// 4. CBD standup targets (Victoria / Henderson / Glyn Jones /
+					// Haile Selassie) — light all four for the block bonus
+					TRI_TARGETS.forEach((target, idx) => {
+						if (p.triCooldown[idx] > 0) return;
+						const dx = ball.x - target.x;
+						const dy = ball.y - target.y;
+						const dist = Math.hypot(dx, dy);
+						const minDist = ball.radius + 10;
+						if (dist < minDist && dist > 0.0001) {
+							const nx = dx / dist;
+							const ny = dy / dist;
+							ball.x = target.x + nx * minDist;
+							ball.y = target.y + ny * minDist;
+							const vn = ball.vx * nx + ball.vy * ny;
+							if (vn < 0) {
+								ball.vx -= 2 * vn * nx;
+								ball.vy -= 2 * vn * ny;
+								ball.vx += nx * 2.5;
+								ball.vy += ny * 2.5;
+							}
+							p.triCooldown[idx] = 30;
+							if (p.isTilted) return;
+							soundFX.playTargetHit(false);
+							if (!p.triangleLit[idx]) {
+								p.triangleLit[idx] = true;
+								addPoints(
+									1000,
+									target.x,
+									target.y - 20,
+									target.label,
+									"#F59E0B",
+								);
+								spawnParticles(target.x, target.y, "#F59E0B", 8);
+								if (p.triangleLit.every(Boolean)) {
+									addPoints(10000, 250, 480, "CBD COMPLETE", "#F59E0B");
+									p.multiplier = Math.min(8, p.multiplier + 1);
+									soundFX.playRankPromotion();
+									p.statusMessage = `CBD COMPLETE! MULTIPLIER UP TO ${p.multiplier}X`;
+									p.triRearm = 120;
+								}
+							} else {
+								addPoints(
+									400,
+									target.x,
+									target.y - 20,
+									target.label,
+									"#94A3B8",
+								);
+							}
+						}
+					});
+				}
+			};
+
+			if (!mainParked) stepOneBall(p.ball, true);
+			for (const extra of p.extraBalls) stepOneBall(extra, false);
+
+			// 4. Chichiri Loop Kicker Pocket, main ball only (x: 398, y: 215)
 			const distLoop = Math.hypot(p.ball.x - 398, p.ball.y - 215);
-			if (distLoop < 18 && p.loopCaptureTimer === 0 && !p.isTilted) {
+			if (
+				distLoop < 18 &&
+				p.loopCaptureTimer === 0 &&
+				p.vaultCaptureTimer === 0 &&
+				!p.isTilted
+			) {
 				p.loopCaptureTimer = 52; // ~0.85s lock
 				soundFX.playLoopCapture();
 				addPoints(3500, 398, 195, "CHICHIRI LOOP", "#10B981");
@@ -827,60 +1064,133 @@ export function PinballCanvas({
 				p.statusMessage = "CHICHIRI LOOP LOCKED · +3,500 PTS & BALL SAVE";
 			}
 
-			// 5. Check Rollover Lanes (B-L-A-N-T-Y-R-E)
-			p.rollovers.forEach((lane) => {
-				if (lane.cooldown === 0 && !p.isTilted) {
-					const d = Math.hypot(p.ball.x - lane.x, p.ball.y - lane.y);
-					if (d < lane.radius + p.ball.radius * 0.6) {
-						lane.cooldown = 45;
-						const wasLit = p.sectorLights[lane.letterIndex];
-						p.sectorLights[lane.letterIndex] = true;
-						soundFX.playTargetHit(false);
-						addPoints(
-							wasLit ? 400 : 1200,
-							lane.x,
-							lane.y - 12,
-							`LANE ${lane.letter}`,
-							"#38BDF8",
-						);
+			// 4b. Mandala Vault pocket, main ball only — locks feed multiball
+			const distVault = Math.hypot(p.ball.x - VAULT_X, p.ball.y - VAULT_Y);
+			if (
+				distVault < 16 &&
+				p.vaultCaptureTimer === 0 &&
+				p.loopCaptureTimer === 0 &&
+				!p.isTilted
+			) {
+				p.vaultCaptureTimer = 45; // ~0.75s lock
+				soundFX.playTargetHit(false);
+				p.vaultLocks += 1;
+				addPoints(
+					2500,
+					VAULT_X,
+					VAULT_Y - 22,
+					`VAULT LOCK ${p.vaultLocks}/3`,
+					"#F59E0B",
+				);
+				spawnParticles(VAULT_X, VAULT_Y, "#F59E0B", 10);
+				p.statusMessage =
+					p.vaultLocks >= 3
+						? "VAULT FULL — HOLD ON"
+						: `VAULT LOCK ${p.vaultLocks}/3 · MANDALA HOUSE`;
+			}
 
-						if (p.sectorLights.every(Boolean)) {
-							p.multiplier = Math.min(10, p.multiplier + 1);
-							addPoints(12000, 250, 160, "BLANTYRE COMPLETE!", "#F59E0B");
-							soundFX.playRankPromotion();
-							p.statusMessage = `ALL BLANTYRE LANES LIT! MULTIPLIER ${p.multiplier}X`;
-							p.sectorLights = [
-								false,
-								false,
-								false,
-								false,
-								false,
-								false,
-								false,
-								false,
-							];
+			const liveBalls = [p.ball, ...p.extraBalls];
+
+			// 5. Rollover Lanes (every live ball; doubled while runway is open)
+			for (const ball of liveBalls) {
+				p.rollovers.forEach((lane) => {
+					if (lane.cooldown === 0 && !p.isTilted) {
+						const d = Math.hypot(ball.x - lane.x, ball.y - lane.y);
+						if (d < lane.radius + ball.radius * 0.6) {
+							lane.cooldown = 45;
+							const wasLit = p.sectorLights[lane.letterIndex];
+							p.sectorLights[lane.letterIndex] = true;
+							soundFX.playTargetHit(false);
+							let base = wasLit ? 400 : 1200;
+							if (p.runwayTimer > 0) base *= 2;
+							addPoints(
+								base,
+								lane.x,
+								lane.y - 12,
+								lane.road.toUpperCase(),
+								"#38BDF8",
+							);
+
+							if (p.sectorLights.every(Boolean)) {
+								p.multiplier = Math.min(10, p.multiplier + 1);
+								addPoints(12000, 250, 160, "BLANTYRE COMPLETE!", "#F59E0B");
+								soundFX.playRankPromotion();
+								p.statusMessage = `ALL BLANTYRE LANES LIT! MULTIPLIER ${p.multiplier}X`;
+								p.sectorLights = [
+									false,
+									false,
+									false,
+									false,
+									false,
+									false,
+									false,
+									false,
+								];
+							}
 						}
 					}
+				});
+			}
+
+			// Clamp speed + record trails (every live ball)
+			for (const ball of liveBalls) {
+				const speed = Math.hypot(ball.vx, ball.vy);
+				const maxSpeed = 24;
+				if (speed > maxSpeed) {
+					ball.vx = (ball.vx / speed) * maxSpeed;
+					ball.vy = (ball.vy / speed) * maxSpeed;
 				}
-			});
-
-			// Clamp maximum ball speed
-			const speed = Math.hypot(p.ball.vx, p.ball.vy);
-			const maxSpeed = 24;
-			if (speed > maxSpeed) {
-				p.ball.vx = (p.ball.vx / speed) * maxSpeed;
-				p.ball.vy = (p.ball.vy / speed) * maxSpeed;
+				ball.trail.unshift({ x: ball.x, y: ball.y });
+				if (ball.trail.length > 12) {
+					ball.trail.pop();
+				}
 			}
 
-			// Record motion trail
-			p.ball.trail.unshift({ x: p.ball.x, y: p.ball.y });
-			if (p.ball.trail.length > 12) {
-				p.ball.trail.pop();
+			// Parked-ball recovery: a live ball settled in the shooter lane
+			// relaunches itself instead of soft-locking the table
+			if (p.hasLaunched) {
+				for (const ball of liveBalls) {
+					const speed = Math.hypot(ball.vx, ball.vy);
+					if (ball.x > 474 && ball.y > 540 && speed < 0.7) {
+						ball.stillFrames += 1;
+						if (ball.stillFrames > 120) {
+							ball.stillFrames = 0;
+							ball.vx = -0.8;
+							ball.vy = -22;
+							soundFX.playPlungerLaunch(0.5);
+						}
+					} else {
+						ball.stillFrames = 0;
+					}
+				}
 			}
 
-			// 6. Check Ball Drain below flippers
+			// 6. Extra-ball drains (multiball balls just leave the table)
+			for (let i = p.extraBalls.length - 1; i >= 0; i--) {
+				const extra = p.extraBalls[i];
+				if (extra.y > 765) {
+					p.extraBalls.splice(i, 1);
+					soundFX.playBallDrain();
+					if (p.multiball && p.extraBalls.length === 0) {
+						p.multiball = false;
+						p.statusMessage = "MULTIBALL END";
+					}
+				}
+			}
+
+			// 7. Main-ball drain below flippers
 			if (p.ball.y > 765) {
-				if (p.ballSaveTimer > 0 && !p.isTilted) {
+				const promoted = p.multiball ? p.extraBalls.shift() : undefined;
+				if (promoted) {
+					// An extra becomes the main ball — play continues
+					p.ball = promoted;
+					if (p.extraBalls.length === 0) {
+						p.multiball = false;
+						p.statusMessage = "MULTIBALL END";
+					} else {
+						p.statusMessage = "STILL ROLLING — MULTIBALL";
+					}
+				} else if (p.ballSaveTimer > 0 && !p.isTilted) {
 					// Ball Save Auto-Relaunch!
 					soundFX.playLoopCapture();
 					p.ball.x = 500;
@@ -906,6 +1216,10 @@ export function PinballCanvas({
 					const sectorBonus = litCount * 1500 * p.multiplier;
 					p.score += sectorBonus;
 					p.roundStartScore = p.score;
+					// A lost ball resets table modes for the next one
+					p.runwayTimer = 0;
+					p.triangleLit = [false, false, false, false];
+					p.dropTargetsDown = [false, false, false];
 
 					if (p.ballsRemaining > 1) {
 						p.ballsRemaining -= 1;
@@ -1042,6 +1356,34 @@ export function PinballCanvas({
 			ctx.textAlign = "center";
 			ctx.fillText("CHICHIRI LOOP", 398, 184);
 
+			// 4b. Mandala Vault with lock pips
+			ctx.save();
+			ctx.translate(VAULT_X, VAULT_Y);
+			ctx.beginPath();
+			ctx.arc(0, 0, 20, 0, Math.PI * 2);
+			ctx.fillStyle = "rgba(245, 158, 11, 0.12)";
+			ctx.fill();
+			ctx.lineWidth = 3;
+			ctx.strokeStyle = "#F59E0B";
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.arc(0, 0, 11, 0, Math.PI * 2);
+			ctx.lineWidth = 2;
+			ctx.strokeStyle = "rgba(245, 158, 11, 0.6)";
+			ctx.stroke();
+			ctx.restore();
+			for (let i = 0; i < 3; i++) {
+				ctx.beginPath();
+				ctx.arc(VAULT_X - 14 + i * 14, VAULT_Y + 30, 4, 0, Math.PI * 2);
+				ctx.fillStyle =
+					i < p.vaultLocks ? "#F59E0B" : "rgba(148, 163, 184, 0.35)";
+				ctx.fill();
+			}
+			ctx.fillStyle = "#F59E0B";
+			ctx.font = "700 8px Orbitron, sans-serif";
+			ctx.textAlign = "center";
+			ctx.fillText("MANDALA VAULT", VAULT_X, VAULT_Y - 28);
+
 			// 5. Rollover Lanes (B-L-A-N-T-Y-R-E)
 			p.rollovers.forEach((lane) => {
 				const isLit = p.sectorLights[lane.letterIndex];
@@ -1110,15 +1452,63 @@ export function PinballCanvas({
 				ctx.stroke();
 			});
 
-			// Label for Chileka Bank
+			// Label for Chileka Airport bank
 			ctx.save();
 			ctx.translate(50, 430);
 			ctx.rotate(-Math.PI / 2);
 			ctx.fillStyle = "#38BDF8";
 			ctx.font = "700 8px Orbitron, sans-serif";
 			ctx.textAlign = "center";
-			ctx.fillText("CHILEKA", 0, 0);
+			ctx.fillText("CHILEKA AIRPORT", 0, 0);
 			ctx.restore();
+
+			// Painted lane art: Masauko Chipembere Highway up the shooter lane
+			ctx.save();
+			ctx.translate(499, 400);
+			ctx.rotate(-Math.PI / 2);
+			ctx.fillStyle = "rgba(148, 163, 184, 0.5)";
+			ctx.font = "700 9px Orbitron, sans-serif";
+			ctx.textAlign = "center";
+			ctx.fillText("MASAUKO CHIPEMBERE HWY", 0, 0);
+			ctx.restore();
+
+			// 7b. CBD standup targets, lit gold once hit
+			TRI_TARGETS.forEach((target, idx) => {
+				const lit = p.triangleLit[idx];
+				ctx.save();
+				ctx.beginPath();
+				ctx.arc(target.x, target.y, 10, 0, Math.PI * 2);
+				ctx.fillStyle = lit ? "#F59E0B" : "rgba(30, 41, 59, 0.85)";
+				ctx.fill();
+				ctx.lineWidth = 2;
+				ctx.strokeStyle = lit ? "#FEF3C7" : "rgba(148, 163, 184, 0.5)";
+				ctx.stroke();
+				ctx.fillStyle = lit ? "#0F172A" : "#94A3B8";
+				ctx.font = "700 7px Orbitron, sans-serif";
+				ctx.textAlign = "center";
+				ctx.fillText(target.label, target.x, target.y + 20);
+				ctx.restore();
+			});
+
+			// Runway countdown while Chileka stays open
+			if (p.runwayTimer > 0) {
+				ctx.fillStyle = "#38BDF8";
+				ctx.font = "700 9px Orbitron, sans-serif";
+				ctx.textAlign = "center";
+				ctx.fillText(
+					`RWY OPEN ${Math.ceil(p.runwayTimer / 60)}S · LANES ×2`,
+					110,
+					348,
+				);
+			}
+
+			// Limbe Express departure tag on the left kicker
+			if (p.expressWindow > 0) {
+				ctx.fillStyle = "#F59E0B";
+				ctx.font = "700 8px Orbitron, sans-serif";
+				ctx.textAlign = "center";
+				ctx.fillText("EXPRESS ×3", 145, 515);
+			}
 
 			// 8. Render 4 Bumpers (Michiru, Soche, Ndirande, Kabula)
 			p.bumpers.forEach((b) => {
@@ -1218,7 +1608,31 @@ export function PinballCanvas({
 			drawFlipper(p.leftFlipper);
 			drawFlipper(p.rightFlipper);
 
-			// 11. Render Ball Motion Trail & Pinball
+			// 11. Render Ball Motion Trails & Pinballs (main + multiball extras)
+			const paintBall = (bx: number, by: number, br: number) => {
+				const ballGrad = ctx.createRadialGradient(
+					bx - 3.5,
+					by - 3.5,
+					1.5,
+					bx,
+					by,
+					br,
+				);
+				ballGrad.addColorStop(0, "#FFFFFF");
+				ballGrad.addColorStop(0.55, "#E2E8F0");
+				ballGrad.addColorStop(1, "#64748B");
+
+				ctx.save();
+				ctx.beginPath();
+				ctx.arc(bx, by, br, 0, Math.PI * 2);
+				ctx.fillStyle = ballGrad;
+				ctx.fill();
+				ctx.lineWidth = 1.2;
+				ctx.strokeStyle = "#F8FAFC";
+				ctx.stroke();
+				ctx.restore();
+			};
+
 			p.ball.trail.forEach((pt, idx) => {
 				const ratio = 1 - idx / p.ball.trail.length;
 				ctx.beginPath();
@@ -1226,28 +1640,18 @@ export function PinballCanvas({
 				ctx.fillStyle = `rgba(56, 189, 248, ${ratio * 0.24})`;
 				ctx.fill();
 			});
+			paintBall(p.ball.x, p.ball.y, p.ball.radius);
 
-			ctx.save();
-			const ballGrad = ctx.createRadialGradient(
-				p.ball.x - 3.5,
-				p.ball.y - 3.5,
-				1.5,
-				p.ball.x,
-				p.ball.y,
-				p.ball.radius,
-			);
-			ballGrad.addColorStop(0, "#FFFFFF");
-			ballGrad.addColorStop(0.55, "#E2E8F0");
-			ballGrad.addColorStop(1, "#64748B");
-
-			ctx.beginPath();
-			ctx.arc(p.ball.x, p.ball.y, p.ball.radius, 0, Math.PI * 2);
-			ctx.fillStyle = ballGrad;
-			ctx.fill();
-			ctx.lineWidth = 1.2;
-			ctx.strokeStyle = "#F8FAFC";
-			ctx.stroke();
-			ctx.restore();
+			p.extraBalls.forEach((extra) => {
+				extra.trail.forEach((pt, idx) => {
+					const ratio = 1 - idx / extra.trail.length;
+					ctx.beginPath();
+					ctx.arc(pt.x, pt.y, extra.radius * ratio * 0.75, 0, Math.PI * 2);
+					ctx.fillStyle = `rgba(56, 189, 248, ${ratio * 0.24})`;
+					ctx.fill();
+				});
+				paintBall(extra.x, extra.y, extra.radius);
+			});
 
 			// 12. Render Spark Particles & Floating Score Popups
 			p.particles.forEach((pt) => {

@@ -137,14 +137,13 @@ export const BLANTYRE_MISSIONS: MissionDef[] = [
 		actionType: "DROP_TARGETS",
 	},
 	{
-		id: "chichiri-loop",
-		title: "Chichiri Loop Rush",
-		location: "Right Kicker Loop",
-		description:
-			"Lock the ball inside the Chichiri loop kicker twice for a super launch.",
-		targetGoal: 2,
-		rewardScore: 30000,
-		actionType: "LOOP",
+		id: "chileka-approach",
+		title: "Chileka Approach",
+		location: "Chileka Airport",
+		description: "Knock down all 3 drop targets to clear the runway.",
+		targetGoal: 3,
+		rewardScore: 22500,
+		actionType: "DROP_TARGETS",
 	},
 	{
 		id: "shire-express",
@@ -156,6 +155,34 @@ export const BLANTYRE_MISSIONS: MissionDef[] = [
 		rewardScore: 40000,
 		actionType: "BUMPERS",
 	},
+	{
+		id: "mandala-house",
+		title: "Mandala House Tour",
+		location: "Oldest Building · 1882",
+		description:
+			"Strike 20 bumpers to walk the veranda of Malawi's oldest building, home to a cafe, gallery and library.",
+		targetGoal: 20,
+		rewardScore: 50000,
+		actionType: "BUMPERS",
+	},
+];
+
+export interface StreetLane {
+	letter: string;
+	road: string;
+}
+
+/** The 8 rollover lanes, each a real Blantyre street. Order matches the
+ *  B-L-A-N-T-Y-R-E lane positions on the table, top arch first. */
+export const BLANTYRE_STREETS: StreetLane[] = [
+	{ letter: "B", road: "Victoria Avenue" },
+	{ letter: "L", road: "Henderson Street" },
+	{ letter: "A", road: "Haile Selassie Rd" },
+	{ letter: "N", road: "Glyn Jones Rd" },
+	{ letter: "T", road: "Chipembere Hwy" },
+	{ letter: "Y", road: "Mandala Rd" },
+	{ letter: "R", road: "Ndirande Rd" },
+	{ letter: "E", road: "Michiru Rd" },
 ];
 
 export const BLANTYRE_LETTERS = [
