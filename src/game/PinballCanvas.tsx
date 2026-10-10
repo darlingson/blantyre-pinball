@@ -56,7 +56,7 @@ const ROLLOVER_SPOTS = [
 	{ x: 278, y: 102 },
 	{ x: 332, y: 112 },
 	{ x: 96, y: 315 },
-	{ x: 404, y: 315 },
+	{ x: 365, y: 150 },
 	{ x: 86, y: 585 },
 	{ x: 414, y: 585 },
 ];
@@ -94,15 +94,19 @@ interface BallState {
 const VAULT_X = 110;
 const VAULT_Y = 208;
 
+// Reserve Bank chamber at the top of the Hannover Street lane
+const RESERVE_X = 384;
+const RESERVE_Y = 342;
+const RESERVE_BASE = 10000;
+
 // Seat position: parked on top of the plunger spring
 const SEAT_X = 500;
 const SEAT_Y = 668;
 
-// CBD standup targets: the old government-triangle avenues + Victoria
+// CBD standup targets: Victoria, Henderson, Haile Selassie
 const TRI_TARGETS = [
 	{ x: 140, y: 420, label: "VICTORIA" },
-	{ x: 360, y: 420, label: "HENDERSON" },
-	{ x: 250, y: 590, label: "GLYN JONES" },
+	{ x: 300, y: 445, label: "HENDERSON" },
 	{ x: 200, y: 470, label: "HAILE SELASSIE" },
 ];
 
@@ -168,6 +172,10 @@ export function PinballCanvas({
 		loopCaptureTimer: 0,
 		loopCooldown: 0,
 		vaultCooldown: 0,
+		reserveJackpot: RESERVE_BASE,
+		reserveTimer: 0,
+		reserveCooldown: 0,
+		reserveFastCd: 0,
 		stuckX: SEAT_X,
 		stuckY: SEAT_Y,
 		stuckN: 0,
@@ -250,8 +258,8 @@ export function PinballCanvas({
 		hasLaunched: false,
 		vaultLocks: 0,
 		vaultCaptureTimer: 0,
-		triangleLit: [false, false, false, false],
-		triCooldown: [0, 0, 0, 0],
+		triangleLit: [false, false, false],
+		triCooldown: [0, 0, 0],
 		triRearm: 0,
 		runwayTimer: 0,
 		expressIdle: 900,
@@ -335,14 +343,18 @@ export function PinballCanvas({
 		p.extraBalls = [];
 		p.multiball = false;
 		p.vaultLocks = 0;
-		p.triangleLit = [false, false, false, false];
-		p.triCooldown = [0, 0, 0, 0];
+		p.triangleLit = [false, false, false];
+		p.triCooldown = [0, 0, 0];
 		p.triRearm = 0;
 		p.runwayTimer = 0;
 		p.expressIdle = 900;
 		p.expressWindow = 0;
 		p.loopCooldown = 0;
 		p.vaultCooldown = 0;
+		p.reserveJackpot = RESERVE_BASE;
+		p.reserveTimer = 0;
+		p.reserveCooldown = 0;
+		p.reserveFastCd = 0;
 		resetBallToPlunger("BALL 1 READY · HOLD SPACE TO LAUNCH");
 	}, [resetTrigger]);
 
@@ -386,6 +398,7 @@ export function PinballCanvas({
 				p.loopCooldown = 0;
 				p.vaultCaptureTimer = 0;
 				p.vaultCooldown = 0;
+				p.reserveTimer = 0;
 				p.ballSaveTimer = 0;
 				p.ball.x = 250;
 				p.ball.y = 800;
@@ -624,6 +637,12 @@ export function PinballCanvas({
 
 				// Upper-right Chichiri loop deflector guide
 				{ x1: 432, y1: 175, x2: 454, y2: 265 },
+
+				// Hannover Street lane: walled chute up to the Reserve chamber.
+				// Near-parallel guides, open at both ends — nothing to wedge on.
+				// The mouth tilts toward the flippers to invite approach shots.
+				{ x1: 334, y1: 452, x2: 368, y2: 330 },
+				{ x1: 370, y1: 450, x2: 400, y2: 330 },
 			];
 
 			// One-way gate: launched balls pass straight through it, but
@@ -709,7 +728,7 @@ export function PinballCanvas({
 			if (p.triRearm > 0) {
 				p.triRearm -= 1;
 				if (p.triRearm === 0) {
-					p.triangleLit = [false, false, false, false];
+					p.triangleLit = [false, false, false];
 				}
 			}
 			if (p.runwayTimer > 0) {
@@ -721,6 +740,8 @@ export function PinballCanvas({
 			}
 			if (p.loopCooldown > 0) p.loopCooldown -= 1;
 			if (p.vaultCooldown > 0) p.vaultCooldown -= 1;
+			if (p.reserveCooldown > 0) p.reserveCooldown -= 1;
+			if (p.reserveFastCd > 0) p.reserveFastCd -= 1;
 
 			// Limbe Express schedule: a timed double-points window on the kicker
 			if (p.expressWindow > 0) {
@@ -813,6 +834,36 @@ export function PinballCanvas({
 				} else {
 					p.ball.x = VAULT_X + Math.sin(p.vaultCaptureTimer * 0.5) * 2.5;
 					p.ball.y = VAULT_Y + Math.cos(p.vaultCaptureTimer * 0.5) * 2.5;
+					p.ball.vx = 0;
+					p.ball.vy = 0;
+					mainParked = true;
+				}
+			}
+			if (p.reserveTimer > 0) {
+				p.reserveTimer -= 1;
+				if (p.reserveTimer === 0) {
+					// Bank the jackpot and eject back toward the bumpers
+					const banked = p.reserveJackpot;
+					p.reserveJackpot = RESERVE_BASE;
+					const ejectAngle =
+						Math.atan2(200 - RESERVE_Y, 250 - RESERVE_X) +
+						(Math.random() - 0.5) * 0.2;
+					p.ball.vx = Math.cos(ejectAngle) * 13;
+					p.ball.vy = Math.sin(ejectAngle) * 13;
+					addPoints(
+						banked,
+						RESERVE_X,
+						RESERVE_Y - 24,
+						"RESERVE BANKED",
+						"#10B981",
+					);
+					spawnParticles(RESERVE_X, RESERVE_Y, "#10B981", 14);
+					soundFX.playRankPromotion();
+					p.statusMessage = `RESERVE BANKED ${banked.toLocaleString()} · JACKPOT RESET`;
+					p.reserveCooldown = 45;
+				} else {
+					p.ball.x = RESERVE_X + Math.sin(p.reserveTimer * 0.5) * 2.5;
+					p.ball.y = RESERVE_Y + Math.cos(p.reserveTimer * 0.5) * 2.5;
 					p.ball.vx = 0;
 					p.ball.vy = 0;
 					mainParked = true;
@@ -918,8 +969,7 @@ export function PinballCanvas({
 						// One-way surfaces: pass through when moving up fast
 						// enough, collide otherwise (gate blocks fall-backs,
 						// spring tip catches falls but never stops a launch)
-						if (wall.isOneWay && ball.vy < (wall.oneWayVy ?? -2))
-							continue;
+						if (wall.isOneWay && ball.vy < (wall.oneWayVy ?? -2)) continue;
 						const closest = closestPointOnSegment(
 							ball.x,
 							ball.y,
@@ -1095,6 +1145,8 @@ export function PinballCanvas({
 							if (bumper.hitTimer === 0 && !p.isTilted) {
 								bumper.hitTimer = 12;
 								soundFX.playBumper(idx + p.bumperUpgradeLevel);
+								// Every bumper hit feeds the Reserve jackpot
+								p.reserveJackpot += 250;
 								const pts = bumper.basePoints * p.bumperUpgradeLevel;
 								addPoints(
 									pts,
@@ -1114,8 +1166,8 @@ export function PinballCanvas({
 						}
 					});
 
-					// 4. CBD standup targets (Victoria / Henderson / Glyn Jones /
-					// Haile Selassie) — light all four for the block bonus
+					// 4. CBD standup targets (Victoria / Henderson /
+					// Haile Selassie) — light all three for the block bonus
 					TRI_TARGETS.forEach((target, idx) => {
 						if (p.triCooldown[idx] > 0) return;
 						const dx = ball.x - target.x;
@@ -1212,6 +1264,37 @@ export function PinballCanvas({
 					p.vaultLocks >= 3
 						? "VAULT FULL — HOLD ON"
 						: `VAULT LOCK ${p.vaultLocks}/3 · MANDALA HOUSE`;
+			}
+
+			// 4c. Reserve Bank chamber, main ball only — soft shots bank it
+			const distReserve = Math.hypot(
+				p.ball.x - RESERVE_X,
+				p.ball.y - RESERVE_Y,
+			);
+			const reserveSpeed = Math.hypot(p.ball.vx, p.ball.vy);
+			if (
+				distReserve < 14 &&
+				p.reserveTimer === 0 &&
+				p.loopCaptureTimer === 0 &&
+				p.vaultCaptureTimer === 0 &&
+				p.reserveCooldown === 0 &&
+				!p.isTilted
+			) {
+				if (reserveSpeed < 9) {
+					p.reserveTimer = 60; // ~1s hold
+					soundFX.playTargetHit(false);
+					p.statusMessage = "RESERVE CHAMBER — BANKING JACKPOT";
+				} else if (p.reserveFastCd === 0) {
+					p.reserveFastCd = 120;
+					p.popups.push({
+						x: p.ball.x,
+						y: p.ball.y - 20,
+						text: "TOO FAST!",
+						color: "#94A3B8",
+						alpha: 1.0,
+						vy: -1.1,
+					});
+				}
 			}
 
 			const liveBalls = [p.ball, ...p.extraBalls];
@@ -1363,7 +1446,7 @@ export function PinballCanvas({
 					p.roundStartScore = p.score;
 					// A lost ball resets table modes for the next one
 					p.runwayTimer = 0;
-					p.triangleLit = [false, false, false, false];
+					p.triangleLit = [false, false, false];
 					p.dropTargetsDown = [false, false, false];
 
 					if (p.ballsRemaining > 1) {
@@ -1472,6 +1555,8 @@ export function PinballCanvas({
 				0,
 				52,
 			);
+			ctx.fillStyle = "#10B981";
+			ctx.fillText(`RESERVE ${p.reserveJackpot.toLocaleString()}`, 0, 64);
 			ctx.restore();
 
 			// 4. Chichiri Loop Kicker (x: 398, y: 215)
@@ -1500,6 +1585,37 @@ export function PinballCanvas({
 			ctx.font = "700 8px Orbitron, sans-serif";
 			ctx.textAlign = "center";
 			ctx.fillText("CHICHIRI LOOP", 398, 184);
+
+			// 4b. Reserve Bank chamber ring, label, and Hannover paint
+			ctx.save();
+			ctx.translate(RESERVE_X, RESERVE_Y);
+			ctx.beginPath();
+			ctx.arc(0, 0, 20, 0, Math.PI * 2);
+			ctx.fillStyle = "rgba(16, 185, 129, 0.10)";
+			ctx.fill();
+			ctx.lineWidth = 3;
+			ctx.strokeStyle = "#10B981";
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.arc(0, 0, 11, 0, Math.PI * 2);
+			ctx.lineWidth = 2;
+			ctx.strokeStyle = "rgba(16, 185, 129, 0.6)";
+			ctx.stroke();
+			ctx.restore();
+
+			ctx.fillStyle = "#10B981";
+			ctx.font = "700 8px Orbitron, sans-serif";
+			ctx.textAlign = "center";
+			ctx.fillText("RESERVE", 350, 510);
+
+			ctx.save();
+			ctx.translate(330, 400);
+			ctx.rotate(-Math.PI / 2);
+			ctx.fillStyle = "rgba(148, 163, 184, 0.55)";
+			ctx.font = "700 8px Orbitron, sans-serif";
+			ctx.textAlign = "center";
+			ctx.fillText("HANNOVER ST", 0, 0);
+			ctx.restore();
 
 			// 4b. Mandala Vault with lock pips
 			ctx.save();
